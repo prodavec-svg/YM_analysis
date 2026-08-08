@@ -1,4 +1,11 @@
-data/raw/
+# Raw datasets are local-only. Data marts are intentionally tracked.
+/likes.parquet
+/likes_50m.parquet
+/multi_event.parquet
+/data/raw/*
+!/data/raw/.gitkeep
+
 .ipynb_checkpoints/
 __pycache__/
+*.py[cod]
 .idea/
