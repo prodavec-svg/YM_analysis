@@ -18,8 +18,8 @@ from validate_marts import validate_marts
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = PROJECT_DIR / "data" / "marts"
 DEFAULT_INPUT_CANDIDATES = (
-    PROJECT_DIR / "data" / "raw" / "likes.parquet",
     PROJECT_DIR / "data" / "raw" / "multi_event.parquet",
+    PROJECT_DIR / "data" / "raw" / "likes.parquet",
     PROJECT_DIR / "likes_50m.parquet",
     PROJECT_DIR / "likes.parquet",
     PROJECT_DIR / "multi_event.parquet",
@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--input",
         type=Path,
-        help="Source likes parquet. If omitted, common project paths are tried.",
+        help="Source multi-event or likes parquet. If omitted, common paths are tried.",
     )
     parser.add_argument(
         "--output-dir",
@@ -88,12 +88,22 @@ def scan_source(path: Path) -> pl.LazyFrame:
     if invalid_types:
         raise TypeError(f"Required columns must be integers: {invalid_types}")
 
-    return source.select(
+    selected_columns = [
         pl.col("uid").cast(pl.UInt32),
         pl.col("item_id").cast(pl.UInt32),
         pl.col("timestamp").cast(pl.UInt64),
         pl.col("is_organic").cast(pl.UInt8),
-    )
+    ]
+    if "event_type" in schema:
+        selected_columns.append(pl.col("event_type").cast(pl.String))
+    return source.select(selected_columns)
+
+
+def like_events(source: pl.LazyFrame) -> pl.LazyFrame:
+    """Use only explicit likes for like-grained marts in multi-event input."""
+    if "event_type" in source.collect_schema():
+        return source.filter(pl.col("event_type") == "like")
+    return source
 
 
 def daily_metrics(source: pl.LazyFrame) -> pl.LazyFrame:
@@ -114,6 +124,7 @@ def daily_metrics(source: pl.LazyFrame) -> pl.LazyFrame:
 
 
 def user_segments(source: pl.LazyFrame) -> pl.LazyFrame:
+    source = like_events(source)
     return (
         source.group_by("uid")
         .agg(
@@ -141,6 +152,7 @@ def user_segments(source: pl.LazyFrame) -> pl.LazyFrame:
 
 
 def content_health(source: pl.LazyFrame) -> pl.LazyFrame:
+    source = like_events(source)
     # Ordinal rank makes tier sizes deterministic even when many items tie.
     ranked = (
         source.group_by("item_id")

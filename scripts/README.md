@@ -12,7 +12,7 @@
 ## Общая схема работы
 
 ```text
-data/raw/likes.parquet
+data/raw/multi_event.parquet
         │
         ▼
 scripts/build_marts.py
@@ -38,8 +38,8 @@ python -m pip install -r requirements.txt
 Рекомендуемый полный запуск:
 
 ```powershell
-python scripts/build_marts.py --input data/raw/likes.parquet
-python scripts/validate_marts.py --input data/raw/likes.parquet
+python scripts/build_marts.py --input data/raw/multi_event.parquet
+python scripts/validate_marts.py --input data/raw/multi_event.parquet
 python scripts/build_visualizations.py
 ```
 
@@ -59,7 +59,7 @@ python scripts/build_visualizations.py
 
 ```powershell
 python scripts/build_marts.py `
-  --input data/raw/likes.parquet `
+  --input data/raw/multi_event.parquet `
   --output-dir data/marts
 ```
 
@@ -78,6 +78,10 @@ python scripts/build_marts.py `
 | `timestamp` | целочисленный | Номер пятисекундного временного бина. |
 | `is_organic` | целочисленный 0/1 | `1` — самостоятельное обнаружение, `0` — рекомендация. |
 
+Multi-event источник дополнительно содержит `event_type`, `played_ratio_pct` и
+`track_length_seconds`. ETL сохраняет `event_type` для выбора событий `like`;
+playback-поля анализируются в `main.ipynb` и не нужны для трёх базовых витрин.
+
 Функция `scan_source()` проверяет наличие и целочисленный тип обязательных
 полей, затем приводит идентификаторы к `UInt32`, время к `UInt64`, а флаг к
 `UInt8`.
@@ -86,7 +90,8 @@ python scripts/build_marts.py `
 
 #### `mart_daily_metrics.parquet`
 
-Зерно: одна строка на условный день. День вычисляется как
+Зерно: одна строка на условный день. Для multi-event источника учитываются все
+типы событий. День вычисляется как
 `timestamp // 17_280`, поскольку сутки содержат 17 280 пятисекундных бинов.
 
 | Поле | Расчёт |
@@ -98,7 +103,8 @@ python scripts/build_marts.py `
 
 #### `mart_user_segments.parquet`
 
-Зерно: один пользователь.
+Зерно: один пользователь с хотя бы одним `event_type == "like"`. Остальные
+типы событий в эту витрину не попадают.
 
 | Поле | Расчёт |
 |---|---|
@@ -116,7 +122,7 @@ python scripts/build_marts.py `
 
 #### `mart_content_health.parquet`
 
-Зерно: один трек. После агрегации треки сортируются по `total_likes` по
+Зерно: один трек с хотя бы одним событием `like`. После агрегации треки сортируются по `total_likes` по
 убыванию, а равенства разрешаются по `item_id`. Такое ранжирование обеспечивает
 воспроизводимые границы уровней:
 
@@ -130,7 +136,8 @@ python scripts/build_marts.py `
 |---|---|
 | `parse_args()` | Разбирает CLI-аргументы. |
 | `resolve_input()` | Находит и проверяет исходный parquet. |
-| `scan_source()` | Проверяет схему и возвращает нормализованный `LazyFrame`. |
+| `scan_source()` | Проверяет core-схему и возвращает нормализованный `LazyFrame`, сохраняя `event_type` при наличии. |
+| `like_events()` | Для multi-event источника оставляет только явные события `like`. |
 | `daily_metrics()` | Строит ленивый план дневной витрины. |
 | `user_segments()` | Строит пользовательские агрегаты и сегменты. |
 | `content_health()` | Считает популярность, органическую долю и tier трека. |
@@ -151,7 +158,7 @@ python scripts/build_marts.py `
 
 ```powershell
 python scripts/validate_marts.py `
-  --input data/raw/likes.parquet `
+  --input data/raw/multi_event.parquet `
   --marts-dir data/marts
 ```
 
@@ -165,12 +172,14 @@ python scripts/validate_marts.py `
 - наличие всех трёх parquet-файлов;
 - точное совпадение обязательных столбцов;
 - размер каждого файла не более 10 МиБ;
-- отсутствие пропусков в исходнике и витринах;
+- отсутствие пропусков в обязательных core-полях и витринах; структурные null
+  playback-полей у action-событий допустимы;
 - бинарность `is_organic`;
 - уникальность ключей `time_period`, `uid`, `item_id`;
 - положительный DAU;
 - диапазон всех долей от 0 до 1;
-- совпадение числа взаимодействий во всех витринах с исходником;
+- совпадение всех событий с дневной витриной и числа событий `like` с
+  пользовательской/контентной витринами;
 - совпадение числа пользователей и треков;
 - равенство `organic_likes + algo_likes = total_likes`;
 - восстановление исходного числа органических событий из каждой витрины;

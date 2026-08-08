@@ -33,6 +33,7 @@ EXPECTED_COLUMNS = {
         "content_tier",
     },
 }
+CORE_SOURCE_COLUMNS = ("uid", "item_id", "timestamp", "is_organic")
 
 
 def _collect(plan: pl.LazyFrame) -> pl.DataFrame:
@@ -66,6 +67,15 @@ def validate_marts(input_path: Path, marts_dir: Path, verbose: bool = False) -> 
     _check_files(marts_dir)
 
     source = pl.scan_parquet(input_path)
+    source_schema = source.collect_schema()
+    missing_core = set(CORE_SOURCE_COLUMNS).difference(source_schema.names())
+    if missing_core:
+        raise AssertionError(f"Source is missing core columns: {sorted(missing_core)}")
+    likes_source = (
+        source.filter(pl.col("event_type").cast(pl.String) == "like")
+        if "event_type" in source_schema
+        else source
+    )
     daily = pl.scan_parquet(marts_dir / "mart_daily_metrics.parquet")
     users = pl.scan_parquet(marts_dir / "mart_user_segments.parquet")
     content = pl.scan_parquet(marts_dir / "mart_content_health.parquet")
@@ -73,10 +83,10 @@ def validate_marts(input_path: Path, marts_dir: Path, verbose: bool = False) -> 
     source_stats = _collect(
         source.select(
             pl.len().alias("interactions"),
-            pl.col("uid").n_unique().alias("users"),
-            pl.col("item_id").n_unique().alias("items"),
             pl.col("is_organic").sum().alias("organic"),
-            pl.sum_horizontal(pl.all().null_count()).alias("nulls"),
+            pl.sum_horizontal(
+                *(pl.col(name).null_count() for name in CORE_SOURCE_COLUMNS)
+            ).alias("nulls"),
             pl.col("is_organic").min().alias("organic_min"),
             pl.col("is_organic").max().alias("organic_max"),
         )
@@ -88,6 +98,15 @@ def validate_marts(input_path: Path, marts_dir: Path, verbose: bool = False) -> 
         or _scalar(source_stats, "organic_max") != 1
     ):
         raise AssertionError("is_organic must contain binary values 0 and 1")
+
+    like_stats = _collect(
+        likes_source.select(
+            pl.len().alias("interactions"),
+            pl.col("uid").n_unique().alias("users"),
+            pl.col("item_id").n_unique().alias("items"),
+            pl.col("is_organic").sum().alias("organic"),
+        )
+    )
 
     daily_stats = _collect(
         daily.select(
@@ -128,9 +147,11 @@ def validate_marts(input_path: Path, marts_dir: Path, verbose: bool = False) -> 
     )
 
     interactions = int(_scalar(source_stats, "interactions"))
-    expected_users = int(_scalar(source_stats, "users"))
-    expected_items = int(_scalar(source_stats, "items"))
     expected_organic = int(_scalar(source_stats, "organic"))
+    expected_like_interactions = int(_scalar(like_stats, "interactions"))
+    expected_users = int(_scalar(like_stats, "users"))
+    expected_items = int(_scalar(like_stats, "items"))
+    expected_like_organic = int(_scalar(like_stats, "organic"))
     checks = {
         "daily_nonzero_dau": _scalar(daily_stats, "min_dau") > 0,
         "daily_unique_periods": _scalar(daily_stats, "periods")
@@ -147,21 +168,22 @@ def validate_marts(input_path: Path, marts_dir: Path, verbose: bool = False) -> 
         == _scalar(user_stats, "unique_users")
         == expected_users,
         "user_interactions_match": _scalar(user_stats, "interactions")
-        == interactions,
+        == expected_like_interactions,
         "user_like_split_matches": _scalar(user_stats, "organic")
         + _scalar(user_stats, "algorithmic")
-        == interactions,
-        "user_organic_matches": _scalar(user_stats, "organic") == expected_organic,
+        == expected_like_interactions,
+        "user_organic_matches": _scalar(user_stats, "organic")
+        == expected_like_organic,
         "items_match": _scalar(content_stats, "items")
         == _scalar(content_stats, "unique_items")
         == expected_items,
         "content_interactions_match": _scalar(content_stats, "interactions")
-        == interactions,
+        == expected_like_interactions,
         "content_ratios_valid": 0 <= _scalar(content_stats, "ratio_min")
         <= _scalar(content_stats, "ratio_max")
         <= 1,
         "content_organic_matches": math.isclose(
-            _scalar(content_stats, "organic"), expected_organic, abs_tol=1e-6
+            _scalar(content_stats, "organic"), expected_like_organic, abs_tol=1e-6
         ),
         "no_mart_nulls": sum(
             int(_scalar(stats, "nulls"))
@@ -225,6 +247,7 @@ def validate_marts(input_path: Path, marts_dir: Path, verbose: bool = False) -> 
 
     result = {
         "source_interactions": interactions,
+        "like_interactions": expected_like_interactions,
         "users": expected_users,
         "items": expected_items,
         "periods": int(_scalar(daily_stats, "periods")),
@@ -236,8 +259,8 @@ def validate_marts(input_path: Path, marts_dir: Path, verbose: bool = False) -> 
     }
     if verbose:
         print("Validation passed")
-        print(f"  interactions: {interactions:,}")
-        print(f"  users: {expected_users:,}; items: {expected_items:,}")
+        print(f"  all events: {interactions:,}; likes: {expected_like_interactions:,}")
+        print(f"  users with likes: {expected_users:,}; liked items: {expected_items:,}")
         print(f"  periods: {result['periods']:,}")
         print(
             "  segment shares: "

@@ -311,14 +311,15 @@ def write_report(
     gini: float,
 ) -> None:
     interactions = int(daily["total_interactions"].sum())
+    total_likes = int(content["total_likes"].sum())
     organic_likes = int(users["organic_likes"].sum())
     avg_dau = float(daily["dau"].mean())
     peak_dau = int(daily["dau"].max())
     peak_day = int(daily.sort("dau", descending=True)[0, "time_period"])
     head = tiers[0]
     torso = tiers[1]
-    head_like_share = head["likes"] / interactions
-    top_20_share = (head["likes"] + torso["likes"]) / interactions
+    head_like_share = head["likes"] / total_likes
+    top_20_share = (head["likes"] + torso["likes"]) / total_likes
 
     segment_lines = "\n".join(
         f"| {row['segment']} | {row['users']:,} | {row['users'] / users.height:.2%} "
@@ -327,7 +328,7 @@ def write_report(
     )
     tier_lines = "\n".join(
         f"| {row['content_tier']} | {row['items']:,} | {row['items'] / content.height:.2%} "
-        f"| {row['likes']:,} | {row['likes'] / interactions:.2%} |"
+        f"| {row['likes']:,} | {row['likes'] / total_likes:.2%} |"
         for row in tiers
     )
     report = f"""# Yambda: обзор датасета
@@ -337,12 +338,13 @@ def write_report(
 | Метрика | Значение |
 |---|---:|
 | Взаимодействия | {interactions:,} |
+| Лайки | {total_likes:,} |
 | Пользователи | {users.height:,} |
 | Треки | {content.height:,} |
 | Условные дни | {daily.height:,} |
 | Средний DAU | {avg_dau:.1f} |
 | Пиковый DAU | {peak_dau:,} (день {peak_day}) |
-| Органическая доля | {organic_likes / interactions:.2%} |
+| Organic share лайков | {organic_likes / total_likes:.2%} |
 | Gini популярности | {gini:.3f} |
 
 ## Динамика продукта
