@@ -4,6 +4,8 @@
 /multi_event.parquet
 /data/raw/*
 !/data/raw/.gitkeep
+/data/processed/*
+!/data/processed/.gitkeep
 
 .ipynb_checkpoints/
 __pycache__/

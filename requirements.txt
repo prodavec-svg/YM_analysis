@@ -1,1 +1,2 @@
 polars==1.43.2
+matplotlib==3.10.8
