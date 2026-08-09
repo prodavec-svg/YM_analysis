@@ -2,9 +2,10 @@
 
 Проект преобразует сырые multi-event логи Yambda (`listen`/`like`/`unlike`/
 `dislike`/`undislike`) в четыре компактные parquet-витрины для дашборда.
-Источник — обогащённый в `main.ipynb` датасет — обрабатывается лениво через
-`pl.scan_parquet()`, а агрегации выполняются streaming engine Polars, поэтому
-полный лог не загружается в память до агрегации.
+Источник — очищенный в `main.ipynb` датасет (без точных дублей, invalid-строк
+и bot-бинов) — обрабатывается лениво через `pl.scan_parquet()`, а агрегации
+выполняются streaming engine Polars, поэтому полный лог не загружается в
+память до агрегации.
 
 ## Структура
 
@@ -15,7 +16,7 @@ YM_analysis/
 │   ├── processed/              # обогащённые данные и сводка аномалий, исключены из Git
 │   └── marts/                  # сгенерированные витрины, исключены из Git
 ├── scripts/
-│   ├── build_marts_v2.py       # сборка витрин из multi_event_enriched.parquet
+│   ├── build_marts_v2.py       # сборка витрин из multi_event_clean.parquet
 │   └── validate_marts.py       # отдельный запуск проверок
 ├── main.ipynb                  # исследовательский ноутбук: EDA, обогащение, аномалии
 ├── visualization.ipynb         # витринные графики для дашборда
@@ -27,12 +28,12 @@ YM_analysis/
 
 ```powershell
 python -m pip install -r requirements.txt
-python scripts/build_marts_v2.py --input data/processed/multi_event_enriched.parquet
+python scripts/build_marts_v2.py --input data/processed/multi_event_clean.parquet
 ```
 
-`multi_event_enriched.parquet` — результат обогащения в `main.ipynb` (см.
-раздел ниже); без него собирать витрины нечем. По умолчанию результаты
-записываются в `data/marts/`.
+`multi_event_clean.parquet` — результат очистки в `main.ipynb` (см. раздел
+ниже): без точных дублей, invalid-строк и bot-бинов. Без него собирать
+витрины нечем. По умолчанию результаты записываются в `data/marts/`.
 
 ## Витрины
 
@@ -60,21 +61,34 @@ python scripts/build_marts_v2.py --input data/processed/multi_event_enriched.par
 после перехода на `build_marts_v2.py` его нужно обновить под актуальный набор
 колонок, иначе проверка будет падать на честном прогоне.
 
-## Анализ аномалий и обогащение (main.ipynb)
+## Анализ аномалий, очистка и feature-слой (main.ipynb)
 
-`main.ipynb` полностью построен вокруг `data/raw/multi_event.parquet`:
-ленивое чтение, EDA, пользовательские/трековые/временные срезы,
-визуализации, общие проверки и доменные аномалии playback/state/velocity.
+`main.ipynb` полностью построен вокруг `data/raw/multi_event.parquet` и
+строит пайплайн `raw → enriched (флаги, ничего не удаляется) → clean (боты и
+invalid-строки вырезаны) → нормализованные state-переходы и snapshots`.
 
 После выполнения ноутбука создаются локальные файлы:
 
 - `data/processed/multi_event_enriched.parquet` — дедуплицированные события с
-  расчётным временем прослушивания и anomaly-флагами (вход для
-  `build_marts_v2.py`);
+  расчётным временем прослушивания и anomaly-флагами (ничего не удалено, все
+  кандидаты помечены);
 - `data/processed/multi_event_row_anomalies.parquet` — строки с playback- или
   length-кандидатами;
 - `data/processed/multi_event_anomaly_summary.parquet` — сводка schema,
-  playback, state-transition и velocity-проверок.
+  playback, state-transition и velocity-проверок;
+- `data/processed/multi_event_clean.parquet` — очищенный слой (без точных
+  дублей, invalid-строк и bot-бинов; **вход для `build_marts_v2.py`**);
+- `data/processed/multi_event_velocity_bins.parquet` — профиль 5-секундных
+  бинов активности (bot-session / offline-sync флаги);
+- `data/processed/multi_event_cleaning_summary.parquet` — сводка по очистке
+  (сколько строк удалено на каждом шаге);
+- `data/processed/state_transitions_clean.parquet` — нормализованный журнал
+  like/dislike-переходов (идемпотентный, с синтетическими начальными
+  состояниями);
+- `data/processed/state_snapshot_daily_sparse.parquet` — разреженный
+  end-of-day snapshot состояния;
+- `data/processed/state_snapshot_latest.parquet` — актуальные `is_liked` /
+  `is_disliked` на конец окна наблюдения.
 
 Содержимое `data/processed/` исключено из Git и воспроизводится из сырого
 датасета. Подробное описание всех команд и функций — в

@@ -15,10 +15,10 @@
 data/raw/multi_event.parquet
         │
         ▼
-main.ipynb (обогащение, anomaly-флаги)
+main.ipynb (обогащение → очистка → state-слой)
         │
         ▼
-data/processed/multi_event_enriched.parquet
+data/processed/multi_event_clean.parquet
         │
         ▼
 scripts/build_marts_v2.py
@@ -41,14 +41,18 @@ python -m pip install -r requirements.txt
 Рекомендуемый полный запуск:
 
 ```powershell
-python scripts/build_marts_v2.py --input data/processed/multi_event_enriched.parquet
+python scripts/build_marts_v2.py --input data/processed/multi_event_clean.parquet
 python scripts/validate_marts.py --input data/raw/multi_event.parquet
 ```
 
 > `validate_marts.py` пока проверяет старую (до multi-event) схему витрин —
 > `EXPECTED_COLUMNS` и business-инварианты нужно обновить под колонки,
 > которые реально пишет `build_marts_v2.py` (см. ниже), иначе проверка будет
-> падать на честном прогоне.
+> падать на честном прогоне. Дополнительно: витрины теперь строятся из
+> `multi_event_clean.parquet` (без дублей и bot-бинов), поэтому сверка
+> «число событий в витрине == число событий в `--input`» должна сверяться с
+> `multi_event_clean.parquet`, а не с сырым `data/raw/multi_event.parquet` —
+> иначе инвариант не сойдётся даже на честном прогоне.
 
 ---
 
@@ -56,24 +60,25 @@ python scripts/validate_marts.py --input data/raw/multi_event.parquet
 
 ### Назначение
 
-Скрипт реализует ETL-пайплайн на ленивом API Polars. Источник — уже
-обогащённый в `main.ipynb` `multi_event_enriched.parquet` — открывается через
-`pl.scan_parquet()`, преобразования формируются как `LazyFrame`, а запись идёт
-через `sink_parquet()` (streaming). Перед заменой целевого файла готовая
-витрина записывается во временный parquet, поэтому незавершённый расчёт не
-повреждает предыдущий результат.
+Скрипт реализует ETL-пайплайн на ленивом API Polars. Источник — очищенный в
+`main.ipynb` `multi_event_clean.parquet` (без точных дублей, invalid-строк и
+bot-бинов) — открывается через `pl.scan_parquet()`, преобразования
+формируются как `LazyFrame`, а запись идёт через `sink_parquet()`
+(streaming). Перед заменой целевого файла готовая витрина записывается во
+временный parquet, поэтому незавершённый расчёт не повреждает предыдущий
+результат.
 
 ### Интерфейс командной строки
 
 ```powershell
 python scripts/build_marts_v2.py `
-  --input data/processed/multi_event_enriched.parquet `
+  --input data/processed/multi_event_clean.parquet `
   --output-dir data/marts
 ```
 
 | Аргумент | Обязательный | Значение |
 |---|---|---|
-| `--input PATH` | Нет | Обогащённый multi-event parquet. По умолчанию `data/processed/multi_event_enriched.parquet`. |
+| `--input PATH` | Нет | Очищенный multi-event parquet. По умолчанию `data/processed/multi_event_clean.parquet`. |
 | `--output-dir PATH` | Нет | Каталог витрин. По умолчанию `data/marts/`. |
 
 ### Ожидаемая схема входа
