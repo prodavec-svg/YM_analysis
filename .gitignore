@@ -1,4 +1,4 @@
-# Raw datasets are local-only. Data marts are intentionally tracked.
+# Raw, processed and mart datasets are local-only; rebuild via scripts/.
 /likes.parquet
 /likes_50m.parquet
 /multi_event.parquet
@@ -6,6 +6,8 @@
 !/data/raw/.gitkeep
 /data/processed/*
 !/data/processed/.gitkeep
+/data/marts/*
+!/data/marts/.gitkeep
 
 .ipynb_checkpoints/
 __pycache__/
