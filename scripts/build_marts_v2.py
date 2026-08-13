@@ -12,7 +12,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT = PROJECT_DIR / "data" / "processed" / "multi_event_clean.parquet"
 DEFAULT_OUTPUT_DIR = PROJECT_DIR / "data" / "marts"
 
-DAY_IN_FIVE_SECOND_BINS = 24 * 60 * 60 // 5
+DAY_IN_FIVE_SECOND_BINS = 24 * 60 * 60
 EVENT_TYPES = ["listen", "like", "unlike", "dislike", "undislike"]
 
 REQUIRED_COLUMNS = {
