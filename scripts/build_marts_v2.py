@@ -324,6 +324,30 @@ def mart_content_health(source: pl.LazyFrame) -> pl.LazyFrame:
     return items
 
 
+def mart_user_general(source: pl.LazyFrame) -> pl.LazyFrame:
+    """
+    One row = time_period × uid.
+    Contains counts of likes/unlikes/dislikes/undislikes split by organic/algo.
+    """
+    return (
+        source
+        .group_by(["time_period", "uid"])
+        .agg(
+            # Organic (is_organic == 1)
+            ((pl.col("event_type") == "like") & (pl.col("is_organic") == 1)).sum().alias("organic_likes"),
+            ((pl.col("event_type") == "unlike") & (pl.col("is_organic") == 1)).sum().alias("organic_unlikes"),
+            ((pl.col("event_type") == "dislike") & (pl.col("is_organic") == 1)).sum().alias("organic_dislikes"),
+            ((pl.col("event_type") == "undislike") & (pl.col("is_organic") == 1)).sum().alias("organic_undislikes"),
+            # Algorithmic (is_organic == 0)
+            ((pl.col("event_type") == "like") & (pl.col("is_organic") == 0)).sum().alias("algo_likes"),
+            ((pl.col("event_type") == "unlike") & (pl.col("is_organic") == 0)).sum().alias("algo_unlikes"),
+            ((pl.col("event_type") == "dislike") & (pl.col("is_organic") == 0)).sum().alias("algo_dislikes"),
+            ((pl.col("event_type") == "undislike") & (pl.col("is_organic") == 0)).sum().alias("algo_undislikes"),
+        )
+        .sort(["time_period", "uid"])
+    )
+
+
 def write_mart(plan: pl.LazyFrame, destination: Path) -> None:
     """Write a mart with Polars streaming engine."""
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -366,6 +390,10 @@ def main() -> None:
     write_mart(
         mart_content_health(source),
         output_dir / "mart_content_health.parquet",
+    )
+    write_mart(
+        mart_user_general(source),
+        output_dir / "mart_user_general.parquet",
     )
 
     print("Done.")
