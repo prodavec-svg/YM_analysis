@@ -67,3 +67,5 @@
 2. В DataLens объединение (JOIN) будет перенастроено по двум ключам одновременно:
    * `mart_user_general.uid = mart_user_segments.uid` 
    * `mart_user_general.time_period = mart_user_segments.time_period`
+## TODO: Планы на будущее (Техдолг)
+* Перевести расчет сегментов с накопления за всё время (cumulative sum) на **скользящее окно (rolling window)**, например за 30 дней. Это позволит понижать категорию пользователя при длительной неактивности (возврат в `Cold` или перевод в новый сегмент `Churned/Inactive`).
