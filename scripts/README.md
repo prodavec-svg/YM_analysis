@@ -2,7 +2,7 @@
 
 В папке `scripts/` находятся два исполняемых модуля ETL-контура Yambda:
 
-1. `build_marts_v2.py` читает обогащённый multi-event parquet и собирает
+1. `build_marts_v2.ipynb` читает обогащённый multi-event parquet и собирает
    четыре витрины.
 2. `validate_marts.py` проверяет витрины и сверяет их с исходником.
 
@@ -21,7 +21,7 @@ main.ipynb (обогащение → очистка → state-слой)
 data/processed/multi_event_clean.parquet
         │
         ▼
-scripts/build_marts_v2.py
+scripts/build_marts_v2.ipynb
         │
         ├── data/marts/mart_daily_metrics.parquet
         ├── data/marts/mart_event_daily.parquet
@@ -41,13 +41,13 @@ python -m pip install -r requirements.txt
 Рекомендуемый полный запуск:
 
 ```powershell
-python scripts/build_marts_v2.py --input data/processed/multi_event_clean.parquet
+jupyter nbconvert --to notebook --execute scripts/build_marts_v2.ipynb (или просто запустите ячейки в Jupyter/IDE)
 python scripts/validate_marts.py --input data/raw/multi_event.parquet
 ```
 
 > `validate_marts.py` пока проверяет старую (до multi-event) схему витрин —
 > `EXPECTED_COLUMNS` и business-инварианты нужно обновить под колонки,
-> которые реально пишет `build_marts_v2.py` (см. ниже), иначе проверка будет
+> которые реально пишет `build_marts_v2.ipynb` (см. ниже), иначе проверка будет
 > падать на честном прогоне. Дополнительно: витрины теперь строятся из
 > `multi_event_clean.parquet` (без дублей и bot-бинов), поэтому сверка
 > «число событий в витрине == число событий в `--input`» должна сверяться с
@@ -56,7 +56,7 @@ python scripts/validate_marts.py --input data/raw/multi_event.parquet
 
 ---
 
-## `build_marts_v2.py`
+## `build_marts_v2.ipynb`
 
 ### Назначение
 
@@ -71,15 +71,8 @@ bot-бинов) — открывается через `pl.scan_parquet()`, пр�
 ### Интерфейс командной строки
 
 ```powershell
-python scripts/build_marts_v2.py `
-  --input data/processed/multi_event_clean.parquet `
-  --output-dir data/marts
+Откройте `scripts/build_marts_v2.ipynb` в Jupyter Notebook / JupyterLab или вашей IDE и запустите нужные ячейки. Каждая витрина генерируется в своей отдельной ячейке, что позволяет обновлять их автономно.
 ```
-
-| Аргумент | Обязательный | Значение |
-|---|---|---|
-| `--input PATH` | Нет | Очищенный multi-event parquet. По умолчанию `data/processed/multi_event_clean.parquet`. |
-| `--output-dir PATH` | Нет | Каталог витрин. По умолчанию `data/marts/`. |
 
 ### Ожидаемая схема входа
 
@@ -190,7 +183,7 @@ python scripts/validate_marts.py `
 - сумма долей пользовательских сегментов 100%;
 - точное соответствие размеров Head, Torso и Tail заданным процентилям.
 
-Известные расхождения с `build_marts_v2.py` (нужно поправить перед следующим
+Известные расхождения с `build_marts_v2.ipynb` (нужно поправить перед следующим
 прогоном): `EXPECTED_COLUMNS` перечисляет старые 4-колоночные схемы, а не
 реальные ~16 колонок каждой витрины; `mart_event_daily.parquet` вообще не
 охвачен; лимит 10 МиБ для `mart_content_health.parquet` не проходит, так как
@@ -217,7 +210,7 @@ python scripts/validate_marts.py `
 - Скрипты рассчитаны на Python 3.10+ и версии библиотек из `requirements.txt`.
 - Сырой, очищенный датасеты и витрины находятся вне Git — все они
   воспроизводятся из `data/raw/multi_event.parquet` через `main.ipynb` и
-  `build_marts_v2.py`.
+  `build_marts_v2.ipynb`.
 - Для просмотра плана Polars перед выполнением можно вызвать `plan.explain()`.
 - Если сборка завершилась, но проверка упала, не используйте
   `--skip-validation`-подобные обходы как постоянное решение: сначала
