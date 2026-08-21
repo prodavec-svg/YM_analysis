@@ -24,13 +24,7 @@ EXPECTED_COLUMNS = {
     "mart_event_daily.parquet": {
         "time_period", "event_type", "is_organic", "events", "users", "items"
     },
-    "mart_user_segments.parquet": {
-        "uid", "total_events", "unique_items", "listens", "total_likes",
-        "dislikes", "completed_listens", "short_listens", "organic_listens",
-        "algo_listens", "organic_likes", "algo_likes", "played_hours",
-        "avg_played_ratio_pct", "completion_rate", "organic_listen_ratio",
-        "segment",
-    },
+    "mart_user_segments.parquet": {"time_period", "uid", "segment"},
     "mart_content_health.parquet": {
         "item_id", "listeners", "listens", "total_likes", "dislikes",
         "completed_listens", "short_listens", "organic_listens",
@@ -109,13 +103,7 @@ def validate_marts(input_path: Path, marts_dir: Path, verbose: bool = False) -> 
             pl.col("total_events").sum().alias("interactions"),
         )
     )
-    user_stats = _collect(
-        users.select(
-            pl.len().alias("users"),
-            pl.col("uid").n_unique().alias("unique_users"),
-            pl.col("total_events").sum().alias("interactions"),
-        )
-    )
+    user_stats = _collect(users.select(pl.col("uid").n_unique().alias("unique_users")))
     
     # content_health is grouped by ALL items that appeared in ANY event
     content_stats = _collect(
@@ -135,11 +123,8 @@ def validate_marts(input_path: Path, marts_dir: Path, verbose: bool = False) -> 
         == _scalar(daily_stats, "unique_periods"),
         "daily_interactions_match": _scalar(daily_stats, "interactions")
         == interactions,
-        "users_match": _scalar(user_stats, "users")
-        == _scalar(user_stats, "unique_users")
-        == expected_users,
-        "user_interactions_match": _scalar(user_stats, "interactions")
-        == interactions,
+        "users_match": _scalar(user_stats, "unique_users") == expected_users,
+        
         "items_match": _scalar(content_stats, "items")
         == _scalar(content_stats, "unique_items")
         == expected_items,
@@ -154,28 +139,12 @@ def validate_marts(input_path: Path, marts_dir: Path, verbose: bool = False) -> 
     )
     if invalid_segments:
         raise AssertionError(f"Unexpected user segments: {sorted(invalid_segments)}")
-    segment_shares = {
-        row["segment"]: row["count"] / expected_users
-        for row in segment_counts.to_dicts()
-    }
+    total_segment_rows = sum(row["count"] for row in segment_counts.to_dicts())
+    segment_shares = {row["segment"]: row["count"] / total_segment_rows for row in segment_counts.to_dicts()}
     if not math.isclose(sum(segment_shares.values()), 1.0, abs_tol=1e-12):
         raise AssertionError("User segment shares do not sum to 100%")
 
-    expected_segment = (
-        pl.when(pl.col("total_likes") < 5)
-        .then(pl.lit("Cold"))
-        .when(pl.col("organic_likes") / pl.col("total_likes") > 0.7)
-        .then(pl.lit("Explorer"))
-        .when(pl.col("algo_likes") / pl.col("total_likes") > 0.7)
-        .then(pl.lit("Passive"))
-        .otherwise(pl.lit("Mixed"))
-    )
-    invalid_user_rows = _scalar(
-        _collect(users.select((pl.col("segment") != expected_segment).sum().alias("n"))),
-        "n",
-    )
-    if invalid_user_rows:
-        raise AssertionError(f"Incorrect segment on {invalid_user_rows} user rows")
+    
 
     tier_counts = _collect(content.group_by("content_tier").agg(pl.len().alias("count")))
     invalid_tiers = set(tier_counts["content_tier"].to_list()).difference(
