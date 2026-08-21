@@ -167,61 +167,59 @@ def mart_event_daily(source: pl.LazyFrame) -> pl.LazyFrame:
 
 
 def mart_user_segments(source: pl.LazyFrame) -> pl.LazyFrame:
-    """One row = one user. Behaviour metrics + the project's user segment."""
-    users = (
+    """
+    One row = one user per time_period (Snapshot).
+    Calculates cumulative segments over time.
+    """
+    # 1. Daily stats per user (only for active periods)
+    daily_stats = (
+        source
+        .group_by(["uid", "time_period"])
+        .agg(
+            (pl.col("event_type") == "like").sum().alias("daily_total_likes"),
+            ((pl.col("event_type") == "like") & (pl.col("is_organic") == 1)).sum().alias("daily_organic_likes"),
+            ((pl.col("event_type") == "like") & (pl.col("is_organic") == 0)).sum().alias("daily_algo_likes"),
+        )
+    )
+
+    # 2. Get global max period
+    global_max = source.select(pl.col("time_period").max().alias("max_period"))
+    
+    # 3. Get min period per user and cross join with global max
+    user_spans = (
         source
         .group_by("uid")
-        .agg(
-            pl.len().alias("total_events"),
-            pl.col("item_id").n_unique().alias("unique_items"),
-            pl.col("is_listen").sum().alias("listens"),
-
-            (pl.col("event_type") == "like").sum().alias("total_likes"),
-            (pl.col("event_type") == "dislike").sum().alias("dislikes"),
-
-            (
-                (pl.col("event_type") == "listen")
-                & (pl.col("played_ratio_capped_pct") >= 90)
-            ).sum().alias("completed_listens"),
-
-            (
-                (pl.col("event_type") == "listen")
-                & (pl.col("played_ratio_capped_pct") < 10)
-            ).sum().alias("short_listens"),
-
-            (
-                (pl.col("event_type") == "listen")
-                & (pl.col("is_organic") == 1)
-            ).sum().alias("organic_listens"),
-
-            (
-                (pl.col("event_type") == "listen")
-                & (pl.col("is_organic") == 0)
-            ).sum().alias("algo_listens"),
-
-            (
-                (pl.col("event_type") == "like")
-                & (pl.col("is_organic") == 1)
-            ).sum().alias("organic_likes"),
-
-            (
-                (pl.col("event_type") == "like")
-                & (pl.col("is_organic") == 0)
-            ).sum().alias("algo_likes"),
-
-            (pl.col("played_seconds_capped").sum() / 3600).alias("played_hours"),
-            pl.col("played_ratio_capped_pct").mean().alias("avg_played_ratio_pct"),
-        )
+        .agg(pl.col("time_period").min().alias("min_period"))
+        .join(global_max, how="cross")
+    )
+    
+    # 4. Generate all periods from min to global_max
+    user_grid = (
+        user_spans
         .with_columns(
-            pl.when(pl.col("listens") > 0)
-            .then(pl.col("completed_listens") / pl.col("listens"))
-            .otherwise(None)
-            .alias("completion_rate"),
+            pl.int_ranges(pl.col("min_period"), pl.col("max_period") + 1).alias("time_period")
+        )
+        .explode("time_period")
+        .select(
+            pl.col("uid"), 
+            pl.col("time_period").cast(pl.UInt32)
+        )
+    )
 
-            pl.when(pl.col("listens") > 0)
-            .then(pl.col("organic_listens") / pl.col("listens"))
-            .otherwise(None)
-            .alias("organic_listen_ratio"),
+    # 5. Join grid with daily_stats, calculate running totals and segments
+    segments = (
+        user_grid
+        .join(daily_stats, on=["uid", "time_period"], how="left")
+        .with_columns(
+            pl.col("daily_total_likes").fill_null(0),
+            pl.col("daily_organic_likes").fill_null(0),
+            pl.col("daily_algo_likes").fill_null(0),
+        )
+        .sort(["uid", "time_period"])
+        .with_columns(
+            pl.col("daily_total_likes").cum_sum().over("uid").alias("total_likes"),
+            pl.col("daily_organic_likes").cum_sum().over("uid").alias("organic_likes"),
+            pl.col("daily_algo_likes").cum_sum().over("uid").alias("algo_likes"),
         )
         .with_columns(
             pl.when(pl.col("total_likes") < 5)
@@ -233,10 +231,11 @@ def mart_user_segments(source: pl.LazyFrame) -> pl.LazyFrame:
             .otherwise(pl.lit("Mixed"))
             .alias("segment")
         )
-        .sort("uid")
+        .select("time_period", "uid", "segment")
+        .sort(["time_period", "uid"])
     )
 
-    return users
+    return segments
 
 
 def mart_content_health(source: pl.LazyFrame) -> pl.LazyFrame:
