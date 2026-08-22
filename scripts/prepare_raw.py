@@ -9,7 +9,7 @@ logging.basicConfig(
 )
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-LOCAL_SOURCE_PATH = PROJECT_DIR / "data" / "raw" / "multi_event.parquet"
+LOCAL_SOURCE_PATH = PROJECT_DIR / "data" / "raw" / "multi_event_5b.parquet"
 PROCESSED_DIR = PROJECT_DIR / "data" / "processed"
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -22,18 +22,18 @@ if not LOCAL_SOURCE_PATH.is_file():
     from huggingface_hub import hf_hub_download
     cached = hf_hub_download(
         repo_id="yandex/yambda",
-        filename="flat/500m/multi_event.parquet",
+        filename="flat/5b/multi_event.parquet",
         repo_type="dataset",
     )
     LOCAL_SOURCE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(cached, LOCAL_SOURCE_PATH)
+    import os; os.symlink(cached, LOCAL_SOURCE_PATH)
     logging.info("Dataset downloaded successfully.")
 
 logging.info("Connecting to DuckDB for out-of-core processing...")
 con = duckdb.connect(database=':memory:')
 
 # Force DuckDB to use disk for temp storage and limit memory to avoid OOM
-con.execute("PRAGMA memory_limit='4GB'")
+con.execute("PRAGMA memory_limit='8GB'")
 con.execute(f"PRAGMA temp_directory='{TMP_DIR.as_posix()}'")
 
 query = f"""
@@ -97,7 +97,7 @@ COPY (
 ) TO '{CLEAN_PATH.as_posix()}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
 """
 
-logging.info("Executing DuckDB pipeline (spilling to disk). This may take 5-10 minutes...")
+logging.info("Executing DuckDB pipeline (spilling to disk). This will take 1-2 hours for the 5B dataset...")
 con.execute(query)
 
 logging.info(f"Finished successfully! Clean dataset saved to {CLEAN_PATH}")
