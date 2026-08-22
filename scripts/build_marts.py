@@ -1,6 +1,3 @@
-"""Build Yambda marts from the cleaned multi-event layer using DuckDB for out-of-core safety.
-"""
-
 import argparse
 from pathlib import Path
 import logging
@@ -24,19 +21,19 @@ def build_all(input_path: Path, marts_dir: Path) -> None:
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     
     con = duckdb.connect(database=':memory:')
-    con.execute("PRAGMA memory_limit='4GB'")
+    con.execute("PRAGMA memory_limit='6GB'")
     con.execute(f"PRAGMA temp_directory='{TMP_DIR.as_posix()}'")
     
-    # Base view for eligible listens
+    # Base view with in-line eligibility flag to avoid massive self-joins!
     con.execute(f"""
-        CREATE VIEW source AS SELECT *, LEAST(GREATEST(played_ratio_pct, 0.0), 100.0) AS played_ratio_capped_pct FROM read_parquet('{input_path.as_posix()}');
-        
-        CREATE VIEW eligible_listens AS 
-        SELECT * FROM source 
-        WHERE is_listen = true 
-          AND sequence_eligible = true 
-          AND is_bot_session = false 
-          AND is_suspected_bot_user = false;
+        CREATE VIEW source AS 
+        SELECT *, 
+               LEAST(GREATEST(played_ratio_pct, 0.0), 100.0) AS played_ratio_capped_pct,
+               (is_listen = true 
+                AND sequence_eligible = true 
+                AND is_bot_session = false 
+                AND is_suspected_bot_user = false) AS eligible
+        FROM read_parquet('{input_path.as_posix()}');
     """)
 
     # 1. mart_daily_metrics
@@ -44,24 +41,36 @@ def build_all(input_path: Path, marts_dir: Path) -> None:
     con.execute(f"""
         COPY (
             SELECT 
-                s.time_period,
-                COUNT(DISTINCT s.uid) AS dau,
-                COUNT(DISTINCT s.item_id) AS active_items,
+                time_period,
+                COUNT(DISTINCT uid) AS dau,
+                COUNT(DISTINCT item_id) AS active_items,
                 COUNT(*) AS total_events,
-                COUNT(e.uid) AS listens,
-                SUM(CASE WHEN s.event_type = 'like' THEN 1 ELSE 0 END) AS likes,
-                SUM(CASE WHEN s.event_type = 'unlike' THEN 1 ELSE 0 END) AS unlikes,
-                SUM(CASE WHEN s.event_type = 'dislike' THEN 1 ELSE 0 END) AS dislikes,
-                SUM(CASE WHEN s.event_type = 'undislike' THEN 1 ELSE 0 END) AS undislikes,
-                SUM(CASE WHEN e.uid IS NOT NULL AND e.played_ratio_capped_pct >= 80.0 THEN 1 ELSE 0 END) AS completed_listens,
-                SUM(CASE WHEN e.uid IS NOT NULL AND (e.played_seconds_capped <= 30.0 OR e.played_ratio_capped_pct < 10.0) THEN 1 ELSE 0 END) AS short_listens,
-                SUM(CASE WHEN e.uid IS NOT NULL AND e.is_organic = 1 THEN 1 ELSE 0 END) AS organic_listens,
-                SUM(CASE WHEN e.uid IS NOT NULL THEN e.played_seconds_capped ELSE 0 END) / 3600.0 AS played_hours,
-                AVG(CASE WHEN e.uid IS NOT NULL THEN e.played_ratio_capped_pct ELSE NULL END) AS avg_played_ratio_pct
-            FROM source s
-            LEFT JOIN eligible_listens e ON s.uid = e.uid AND s.timestamp = e.timestamp AND s.item_id = e.item_id AND s.event_type = e.event_type
-            GROUP BY s.time_period
-            ORDER BY s.time_period
+                SUM(CASE WHEN eligible THEN 1 ELSE 0 END) AS listens,
+                SUM(CASE WHEN event_type = 'like' THEN 1 ELSE 0 END) AS likes,
+                SUM(CASE WHEN event_type = 'unlike' THEN 1 ELSE 0 END) AS unlikes,
+                SUM(CASE WHEN event_type = 'dislike' THEN 1 ELSE 0 END) AS dislikes,
+                SUM(CASE WHEN event_type = 'undislike' THEN 1 ELSE 0 END) AS undislikes,
+                SUM(CASE WHEN eligible AND played_ratio_capped_pct >= 80.0 THEN 1 ELSE 0 END) AS completed_listens,
+                SUM(CASE WHEN eligible AND (played_seconds_capped <= 30.0 OR played_ratio_capped_pct < 10.0) THEN 1 ELSE 0 END) AS short_listens,
+                SUM(CASE WHEN eligible AND is_organic = 1 THEN 1 ELSE 0 END) AS organic_listens,
+                SUM(CASE WHEN eligible THEN played_seconds_capped ELSE 0 END) / 3600.0 AS played_hours,
+                AVG(CASE WHEN eligible THEN played_ratio_capped_pct ELSE NULL END) AS avg_played_ratio_pct,
+                
+                CASE WHEN SUM(CASE WHEN eligible THEN 1 ELSE 0 END) > 0 THEN 
+                    CAST(SUM(CASE WHEN eligible AND played_ratio_capped_pct >= 80.0 THEN 1 ELSE 0 END) AS FLOAT) / SUM(CASE WHEN eligible THEN 1 ELSE 0 END) 
+                ELSE NULL END AS completion_rate,
+                
+                CASE WHEN SUM(CASE WHEN eligible THEN 1 ELSE 0 END) > 0 THEN 
+                    CAST(SUM(CASE WHEN eligible AND (played_seconds_capped <= 30.0 OR played_ratio_capped_pct < 10.0) THEN 1 ELSE 0 END) AS FLOAT) / SUM(CASE WHEN eligible THEN 1 ELSE 0 END) 
+                ELSE NULL END AS short_listen_rate,
+                
+                CASE WHEN SUM(CASE WHEN eligible THEN 1 ELSE 0 END) > 0 THEN 
+                    CAST(SUM(CASE WHEN eligible AND is_organic = 1 THEN 1 ELSE 0 END) AS FLOAT) / SUM(CASE WHEN eligible THEN 1 ELSE 0 END) 
+                ELSE NULL END AS organic_listen_ratio
+                
+            FROM source
+            GROUP BY time_period
+            ORDER BY time_period
         ) TO '{(marts_dir / 'mart_daily_metrics.parquet').as_posix()}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
     """)
 
@@ -87,28 +96,27 @@ def build_all(input_path: Path, marts_dir: Path) -> None:
     con.execute(f"""
         COPY (
             SELECT 
-                s.time_period,
-                s.uid,
-                SUM(CASE WHEN e.uid IS NOT NULL AND e.is_organic = 1 THEN 1 ELSE 0 END) AS organic_listening,
-                SUM(CASE WHEN e.uid IS NOT NULL AND e.is_organic = 0 THEN 1 ELSE 0 END) AS algo_listening,
-                SUM(CASE WHEN s.event_type = 'like' AND s.is_organic = 1 THEN 1 ELSE 0 END) AS organic_likes,
-                SUM(CASE WHEN s.event_type = 'unlike' AND s.is_organic = 1 THEN 1 ELSE 0 END) AS organic_unlikes,
-                SUM(CASE WHEN s.event_type = 'dislike' AND s.is_organic = 1 THEN 1 ELSE 0 END) AS organic_dislikes,
-                SUM(CASE WHEN s.event_type = 'undislike' AND s.is_organic = 1 THEN 1 ELSE 0 END) AS organic_undislikes,
-                SUM(CASE WHEN s.event_type = 'like' AND s.is_organic = 0 THEN 1 ELSE 0 END) AS algo_likes,
-                SUM(CASE WHEN s.event_type = 'unlike' AND s.is_organic = 0 THEN 1 ELSE 0 END) AS algo_unlikes,
-                SUM(CASE WHEN s.event_type = 'dislike' AND s.is_organic = 0 THEN 1 ELSE 0 END) AS algo_dislikes,
-                SUM(CASE WHEN s.event_type = 'undislike' AND s.is_organic = 0 THEN 1 ELSE 0 END) AS algo_undislikes,
-                SUM(CASE WHEN e.uid IS NOT NULL AND e.played_ratio_capped_pct >= 80.0 AND e.is_organic = 0 THEN 1 ELSE 0 END) AS algo_completed_listens,
-                SUM(CASE WHEN e.uid IS NOT NULL AND e.played_ratio_capped_pct >= 80.0 AND e.is_organic = 1 THEN 1 ELSE 0 END) AS organic_completed_listens,
-                SUM(CASE WHEN e.uid IS NOT NULL AND (e.played_seconds_capped <= 30.0 OR e.played_ratio_capped_pct < 10.0) AND e.is_organic = 0 THEN 1 ELSE 0 END) AS algo_short_listens,
-                SUM(CASE WHEN e.uid IS NOT NULL AND (e.played_seconds_capped <= 30.0 OR e.played_ratio_capped_pct < 10.0) AND e.is_organic = 1 THEN 1 ELSE 0 END) AS organic_short_listens,
-                COUNT(DISTINCT CASE WHEN e.uid IS NOT NULL AND e.is_organic = 0 THEN e.item_id ELSE NULL END) AS algo_unique_items,
-                COUNT(DISTINCT CASE WHEN e.uid IS NOT NULL AND e.is_organic = 1 THEN e.item_id ELSE NULL END) AS organic_unique_items
-            FROM source s
-            LEFT JOIN eligible_listens e ON s.uid = e.uid AND s.timestamp = e.timestamp AND s.item_id = e.item_id AND s.event_type = e.event_type
-            GROUP BY s.time_period, s.uid
-            ORDER BY s.time_period, s.uid
+                time_period,
+                uid,
+                SUM(CASE WHEN eligible AND is_organic = 1 THEN 1 ELSE 0 END) AS organic_listening,
+                SUM(CASE WHEN eligible AND is_organic = 0 THEN 1 ELSE 0 END) AS algo_listening,
+                SUM(CASE WHEN event_type = 'like' AND is_organic = 1 THEN 1 ELSE 0 END) AS organic_likes,
+                SUM(CASE WHEN event_type = 'unlike' AND is_organic = 1 THEN 1 ELSE 0 END) AS organic_unlikes,
+                SUM(CASE WHEN event_type = 'dislike' AND is_organic = 1 THEN 1 ELSE 0 END) AS organic_dislikes,
+                SUM(CASE WHEN event_type = 'undislike' AND is_organic = 1 THEN 1 ELSE 0 END) AS organic_undislikes,
+                SUM(CASE WHEN event_type = 'like' AND is_organic = 0 THEN 1 ELSE 0 END) AS algo_likes,
+                SUM(CASE WHEN event_type = 'unlike' AND is_organic = 0 THEN 1 ELSE 0 END) AS algo_unlikes,
+                SUM(CASE WHEN event_type = 'dislike' AND is_organic = 0 THEN 1 ELSE 0 END) AS algo_dislikes,
+                SUM(CASE WHEN event_type = 'undislike' AND is_organic = 0 THEN 1 ELSE 0 END) AS algo_undislikes,
+                SUM(CASE WHEN eligible AND played_ratio_capped_pct >= 80.0 AND is_organic = 0 THEN 1 ELSE 0 END) AS algo_completed_listens,
+                SUM(CASE WHEN eligible AND played_ratio_capped_pct >= 80.0 AND is_organic = 1 THEN 1 ELSE 0 END) AS organic_completed_listens,
+                SUM(CASE WHEN eligible AND (played_seconds_capped <= 30.0 OR played_ratio_capped_pct < 10.0) AND is_organic = 0 THEN 1 ELSE 0 END) AS algo_short_listens,
+                SUM(CASE WHEN eligible AND (played_seconds_capped <= 30.0 OR played_ratio_capped_pct < 10.0) AND is_organic = 1 THEN 1 ELSE 0 END) AS organic_short_listens,
+                COUNT(DISTINCT CASE WHEN eligible AND is_organic = 0 THEN item_id ELSE NULL END) AS algo_unique_items,
+                COUNT(DISTINCT CASE WHEN eligible AND is_organic = 1 THEN item_id ELSE NULL END) AS organic_unique_items
+            FROM source
+            GROUP BY time_period, uid
+            ORDER BY time_period, uid
         ) TO '{(marts_dir / 'mart_user_general.parquet').as_posix()}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
     """)
 
@@ -157,8 +165,8 @@ def build_all(input_path: Path, marts_dir: Path) -> None:
                 uid,
                 CASE 
                     WHEN total_likes < 5 THEN 'Cold'
-                    WHEN CAST(organic_likes AS FLOAT) / total_likes > 0.7 THEN 'Explorer'
-                    WHEN CAST(algo_likes AS FLOAT) / total_likes > 0.7 THEN 'Passive'
+                    WHEN CAST(organic_likes AS FLOAT) / GREATEST(total_likes, 1) > 0.7 THEN 'Explorer'
+                    WHEN CAST(algo_likes AS FLOAT) / GREATEST(total_likes, 1) > 0.7 THEN 'Passive'
                     ELSE 'Mixed'
                 END AS segment
             FROM cumulative
@@ -172,25 +180,24 @@ def build_all(input_path: Path, marts_dir: Path) -> None:
         COPY (
             WITH item_stats AS (
                 SELECT 
-                    s.item_id,
-                    COUNT(DISTINCT e.uid) AS listeners,
-                    COUNT(e.uid) AS listens,
-                    SUM(CASE WHEN s.event_type = 'like' THEN 1 ELSE 0 END) AS total_likes,
-                    SUM(CASE WHEN s.event_type = 'dislike' THEN 1 ELSE 0 END) AS dislikes,
-                    SUM(CASE WHEN e.uid IS NOT NULL AND e.played_ratio_capped_pct >= 80.0 THEN 1 ELSE 0 END) AS completed_listens,
-                    SUM(CASE WHEN e.uid IS NOT NULL AND (e.played_seconds_capped <= 30.0 OR e.played_ratio_capped_pct < 10.0) THEN 1 ELSE 0 END) AS short_listens,
-                    SUM(CASE WHEN e.uid IS NOT NULL AND e.is_organic = 1 THEN 1 ELSE 0 END) AS organic_listens,
-                    SUM(CASE WHEN e.uid IS NOT NULL AND e.is_organic = 0 THEN 1 ELSE 0 END) AS algo_listens,
-                    SUM(CASE WHEN e.uid IS NOT NULL AND e.played_ratio_capped_pct >= 80.0 AND e.is_organic = 0 THEN 1 ELSE 0 END) AS algo_completed_listens,
-                    SUM(CASE WHEN e.uid IS NOT NULL AND e.played_ratio_capped_pct >= 80.0 AND e.is_organic = 1 THEN 1 ELSE 0 END) AS organic_completed_listens,
-                    SUM(CASE WHEN e.uid IS NOT NULL AND (e.played_seconds_capped <= 30.0 OR e.played_ratio_capped_pct < 10.0) AND e.is_organic = 0 THEN 1 ELSE 0 END) AS algo_short_listens,
-                    SUM(CASE WHEN e.uid IS NOT NULL AND (e.played_seconds_capped <= 30.0 OR e.played_ratio_capped_pct < 10.0) AND e.is_organic = 1 THEN 1 ELSE 0 END) AS organic_short_listens,
-                    SUM(CASE WHEN e.uid IS NOT NULL THEN e.played_seconds_capped ELSE 0 END) / 3600.0 AS played_hours,
-                    AVG(CASE WHEN e.uid IS NOT NULL THEN e.played_ratio_capped_pct ELSE NULL END) AS avg_played_ratio_pct,
-                    MAX(CASE WHEN e.uid IS NOT NULL THEN e.track_length_seconds ELSE NULL END) AS track_length_seconds
-                FROM source s
-                LEFT JOIN eligible_listens e ON s.uid = e.uid AND s.timestamp = e.timestamp AND s.item_id = e.item_id AND s.event_type = e.event_type
-                GROUP BY s.item_id
+                    item_id,
+                    COUNT(DISTINCT CASE WHEN eligible THEN uid ELSE NULL END) AS listeners,
+                    SUM(CASE WHEN eligible THEN 1 ELSE 0 END) AS listens,
+                    SUM(CASE WHEN event_type = 'like' THEN 1 ELSE 0 END) AS total_likes,
+                    SUM(CASE WHEN event_type = 'dislike' THEN 1 ELSE 0 END) AS dislikes,
+                    SUM(CASE WHEN eligible AND played_ratio_capped_pct >= 80.0 THEN 1 ELSE 0 END) AS completed_listens,
+                    SUM(CASE WHEN eligible AND (played_seconds_capped <= 30.0 OR played_ratio_capped_pct < 10.0) THEN 1 ELSE 0 END) AS short_listens,
+                    SUM(CASE WHEN eligible AND is_organic = 1 THEN 1 ELSE 0 END) AS organic_listens,
+                    SUM(CASE WHEN eligible AND is_organic = 0 THEN 1 ELSE 0 END) AS algo_listens,
+                    SUM(CASE WHEN eligible AND played_ratio_capped_pct >= 80.0 AND is_organic = 0 THEN 1 ELSE 0 END) AS algo_completed_listens,
+                    SUM(CASE WHEN eligible AND played_ratio_capped_pct >= 80.0 AND is_organic = 1 THEN 1 ELSE 0 END) AS organic_completed_listens,
+                    SUM(CASE WHEN eligible AND (played_seconds_capped <= 30.0 OR played_ratio_capped_pct < 10.0) AND is_organic = 0 THEN 1 ELSE 0 END) AS algo_short_listens,
+                    SUM(CASE WHEN eligible AND (played_seconds_capped <= 30.0 OR played_ratio_capped_pct < 10.0) AND is_organic = 1 THEN 1 ELSE 0 END) AS organic_short_listens,
+                    SUM(CASE WHEN eligible THEN played_seconds_capped ELSE 0 END) / 3600.0 AS played_hours,
+                    AVG(CASE WHEN eligible THEN played_ratio_capped_pct ELSE NULL END) AS avg_played_ratio_pct,
+                    MAX(CASE WHEN eligible THEN track_length_seconds ELSE NULL END) AS track_length_seconds
+                FROM source
+                GROUP BY item_id
             ),
             ranked_items AS (
                 SELECT *,
