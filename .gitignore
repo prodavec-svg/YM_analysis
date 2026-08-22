@@ -6,7 +6,7 @@
 !/data/raw/.gitkeep
 /data/processed/*
 !/data/processed/.gitkeep
-/data/marts/*
+# /data/marts/*
 !/data/marts/.gitkeep
 
 .ipynb_checkpoints/
@@ -16,3 +16,4 @@ __pycache__/
 
 /data/saved_csv/*
 !/data/saved_csv/.gitkeep
+.DS_Store
