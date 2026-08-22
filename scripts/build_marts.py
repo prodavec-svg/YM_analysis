@@ -8,9 +8,18 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import logging
+import gc
 
 import polars as pl
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
+# Optimize memory usage for Polars streaming engine
+pl.Config.set_streaming_chunk_size(100000)
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT = PROJECT_DIR / "data" / "processed" / "multi_event_clean.parquet"
@@ -44,9 +53,11 @@ def write_mart(plan: pl.LazyFrame, destination: Path) -> None:
     temporary = destination.with_suffix(destination.suffix + ".tmp")
     if temporary.exists():
         temporary.unlink()
+    
+    logging.info(f"Writing {destination.name}...")
     plan.sink_parquet(temporary, compression="zstd", statistics=True, mkdir=True)
     temporary.replace(destination)
-    print(f"Wrote: {destination}")
+    logging.info(f"Successfully wrote {destination.name}")
 
 
 def scan_source(path: Path) -> pl.LazyFrame:
@@ -355,7 +366,9 @@ def mart_user_general(source: pl.LazyFrame) -> pl.LazyFrame:
 
 
 def build_all(input_path: Path, marts_dir: Path) -> None:
+    logging.info(f"Starting mart compilation using input data from: {input_path}")
     source = scan_source(input_path)
+    
     plans = {
         "mart_daily_metrics.parquet": mart_daily_metrics(source),
         "mart_event_daily.parquet": mart_event_daily(source),
@@ -363,8 +376,18 @@ def build_all(input_path: Path, marts_dir: Path) -> None:
         "mart_content_health.parquet": mart_content_health(source),
         "mart_user_general.parquet": mart_user_general(source),
     }
+    
+    total = len(plans)
+    current = 1
+    
     for name, plan in plans.items():
+        logging.info(f"[{current}/{total}] Compiling {name}...")
         write_mart(plan, marts_dir / name)
+        # Force garbage collection between marts to free up memory from aggregations
+        gc.collect()
+        current += 1
+        
+    logging.info("All marts compiled successfully.")
 
 
 def parse_args() -> argparse.Namespace:
