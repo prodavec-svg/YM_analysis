@@ -12,7 +12,7 @@ import polars as pl
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT = PROJECT_DIR / "data" / "processed" / "multi_event_clean.parquet"
 DEFAULT_MARTS_DIR = PROJECT_DIR / "data" / "marts"
-MAX_MART_SIZE = 50 * 1024 * 1024  # Increased to 50MB because content mart can be large
+MAX_MART_SIZE = 500 * 1024 * 1024  # Increased to 50MB because content mart can be large
 
 EXPECTED_COLUMNS = {
     "mart_daily_metrics.parquet": {
