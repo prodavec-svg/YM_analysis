@@ -387,6 +387,16 @@ def build_all(input_path: Path, marts_dir: Path) -> None:
         gc.collect()
         current += 1
         
+    
+    csv_dir = PROJECT_DIR / "data" / "saved_csv"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    logging.info(f"Exporting marts to CSV for DataLens in {csv_dir}...")
+    for name in plans.keys():
+        parquet_path = marts_dir / name
+        csv_path = csv_dir / name.replace(".parquet", ".csv")
+        logging.info(f"Converting {name} to CSV...")
+        pl.scan_parquet(parquet_path).sink_csv(csv_path)
+    logging.info("CSV export completed.")
     logging.info("All marts compiled successfully.")
 
 
@@ -403,3 +413,4 @@ if __name__ == "__main__":
         args.input.expanduser().resolve(),
         args.marts_dir.expanduser().resolve(),
     )
+
