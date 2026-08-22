@@ -1,10 +1,13 @@
 # Документация Python-скриптов
 
-В папке `scripts/` находятся два исполняемых модуля ETL-контура Yambda:
+В папке `scripts/` находятся два исполняемых модуля ETL-контура Yambda и
+ноутбук-обёртка:
 
-1. `build_marts_v2.ipynb` читает обогащённый multi-event parquet и собирает
-   четыре витрины.
+1. `build_marts_v2.py` читает обогащённый multi-event parquet и собирает
+   пять витрин и три CSV для DataLens.
 2. `validate_marts.py` проверяет витрины и сверяет их с исходником.
+3. `build_marts_v2.ipynb` запускает тот же модуль из Jupyter без дублирования
+   ETL-логики.
 
 Все пути вычисляются относительно корня репозитория, поэтому команды можно
 запускать из корня `YM_analysis` независимо от абсолютного расположения клона.
@@ -21,12 +24,14 @@ main.ipynb (обогащение → очистка → state-слой)
 data/processed/multi_event_clean.parquet
         │
         ▼
-scripts/build_marts_v2.ipynb
+scripts/build_marts_v2.py
         │
         ├── data/marts/mart_daily_metrics.parquet
         ├── data/marts/mart_event_daily.parquet
         ├── data/marts/mart_user_segments.parquet
-        └── data/marts/mart_content_health.parquet
+        ├── data/marts/mart_content_health.parquet
+        ├── data/marts/mart_user_general.parquet
+        └── data/saved_csv/{mart_user_general,mart_user_segments,mart_content_health}.csv
                          │
                          ▼
               scripts/validate_marts.py
@@ -41,22 +46,13 @@ python -m pip install -r requirements.txt
 Рекомендуемый полный запуск:
 
 ```powershell
-jupyter nbconvert --to notebook --execute scripts/build_marts_v2.ipynb (или просто запустите ячейки в Jupyter/IDE)
-python scripts/validate_marts.py --input data/raw/multi_event.parquet
+python scripts/build_marts_v2.py
+python scripts/validate_marts.py --input data/processed/multi_event_clean.parquet
 ```
-
-> `validate_marts.py` пока проверяет старую (до multi-event) схему витрин —
-> `EXPECTED_COLUMNS` и business-инварианты нужно обновить под колонки,
-> которые реально пишет `build_marts_v2.ipynb` (см. ниже), иначе проверка будет
-> падать на честном прогоне. Дополнительно: витрины теперь строятся из
-> `multi_event_clean.parquet` (без дублей и bot-бинов), поэтому сверка
-> «число событий в витрине == число событий в `--input`» должна сверяться с
-> `multi_event_clean.parquet`, а не с сырым `data/raw/multi_event.parquet` —
-> иначе инвариант не сойдётся даже на честном прогоне.
 
 ---
 
-## `build_marts_v2.ipynb`
+## `build_marts_v2.py`
 
 ### Назначение
 
@@ -71,7 +67,10 @@ bot-бинов) — открывается через `pl.scan_parquet()`, пр�
 ### Интерфейс командной строки
 
 ```powershell
-Откройте `scripts/build_marts_v2.ipynb` в Jupyter Notebook / JupyterLab или вашей IDE и запустите нужные ячейки. Каждая витрина генерируется в своей отдельной ячейке, что позволяет обновлять их автономно.
+python scripts/build_marts_v2.py `
+  --input data/processed/multi_event_clean.parquet `
+  --marts-dir data/marts `
+  --csv-dir data/saved_csv
 ```
 
 ### Ожидаемая схема входа
@@ -80,16 +79,23 @@ bot-бинов) — открывается через `pl.scan_parquet()`, пр�
 |---|---|
 | `uid` | Идентификатор пользователя. |
 | `item_id` | Идентификатор трека. |
-| `timestamp` | Номер пятисекундного временного бина. |
+| `time_period` | Период, рассчитанный в clean-слое. |
 | `is_organic` | `1` — самостоятельное обнаружение, `0` — рекомендация. |
 | `event_type` | Один из `listen`, `like`, `unlike`, `dislike`, `undislike`. |
 | `played_ratio_pct` | Доля прослушанного трека, % (только для `listen`). |
 | `track_length_seconds` | Длина трека, сек. |
+| `played_seconds_capped` | Время прослушивания с ограничением длиной трека. |
+| `is_listen` | Флаг события прослушивания. |
+| `sequence_eligible` | Флаг допустимости для последовательностных метрик. |
+| `is_bot_session` | Флаг bot-сессии. |
+| `is_suspected_bot_user` | Флаг подозрительного пользователя. |
 
-`scan_source()` проверяет наличие обязательных полей, фильтрует строки с
-некорректными `event_type`/`is_organic`, считает `time_period` (`timestamp //
-17 280`), `is_listen`, `played_ratio_capped_pct` (клип 0–100) и
-`played_seconds_capped`.
+`scan_source()` проверяет наличие обязательных полей clean-слоя и фильтрует
+строки с некорректными `event_type`/`is_organic`. Для listening-метрик единая
+маска требует `is_listen`, `sequence_eligible`, отсутствие bot-session и
+suspected-bot-user. Источник хранит `played_ratio_pct` в шкале 0–100, поэтому
+пороги ТЗ 0.8/0.1 реализованы как 80%/10%; short дополнительно включает
+`played_seconds_capped <= 30`.
 
 ### Формируемые витрины
 
@@ -97,7 +103,7 @@ bot-бинов) — открывается через `pl.scan_parquet()`, пр�
 
 Зерно: один условный день. Содержит DAU, число активных треков, разбивку
 событий по типам (`listens`, `likes`, `unlikes`, `dislikes`, `undislikes`),
-`completed_listens`/`short_listens` (по порогам 90%/10% дослушивания),
+`completed_listens`/`short_listens` (по порогам 80% и 30 сек. или 10%),
 `played_hours`, `avg_played_ratio_pct` и производные доли
 (`completion_rate`, `short_listen_rate`, `organic_listen_ratio`).
 
@@ -109,8 +115,8 @@ bot-бинов) — открывается через `pl.scan_parquet()`, пр�
 
 #### `mart_user_segments.parquet`
 
-Зерно: один пользователь. Активность по всем типам событий плюс
-`total_likes`/`organic_likes`/`algo_likes` и `segment`:
+Зерно: `time_period × uid`. Сегмент рассчитывается по накопленным
+`total_likes`/`organic_likes`/`algo_likes` и пролонгируется в неактивные дни:
 
 1. `Cold`: меньше пяти лайков.
 2. `Explorer`: доля органических лайков строго больше 70%.
@@ -121,7 +127,8 @@ bot-бинов) — открывается через `pl.scan_parquet()`, пр�
 
 Зерно: один трек, встретившийся хотя бы в одном событии (не только `like`).
 Прослушивания, лайки/дизлайки, `completion_rate`, `short_listen_rate`,
-`organic_ratio`, `track_length_seconds` и `content_tier`. После агрегации
+`organic_ratio`, отдельные Algo/Organic completion и skip,
+`track_length_seconds` и `content_tier`. После агрегации
 треки сортируются по `total_likes` по убыванию (равенства — по `item_id`):
 
 - `Head`: первые `ceil(N × 1%)` треков;
@@ -131,18 +138,28 @@ bot-бинов) — открывается через `pl.scan_parquet()`, пр�
 Поскольку зерно — весь каталог (а не только лайкнутые треки), эта витрина на
 порядок больше остальных.
 
+#### `mart_user_general.parquet` и DataLens CSV
+
+Зерно: `time_period × uid`. Помимо реакций и числа прослушиваний по источникам
+содержит шесть новых полей: Algo/Organic completion, Algo/Organic short/skip и
+Algo/Organic unique items. CSV атомарно экспортируется в `data/saved_csv/` для
+обновления файлового источника DataLens. Вместе с ним экспортируются актуальные
+`mart_user_segments.csv` и `mart_content_health.csv`, чтобы JOIN и контентные
+чарты использовали тот же расчётный запуск.
+
 ### Функции
 
 | Функция | Ответственность |
 |---|---|
 | `parse_args()` | Разбирает CLI-аргументы. |
-| `scan_source()` | Проверяет схему, фильтрует и обогащает `LazyFrame` (`time_period`, `is_listen`, playback-поля). |
+| `scan_source()` | Проверяет схему clean-слоя и типы ключевых полей. |
 | `mart_daily_metrics()` | Строит ленивый план дневной витрины. |
 | `mart_event_daily()` | Строит витрину день × тип события × органика. |
 | `mart_user_segments()` | Строит пользовательские агрегаты и сегменты. |
 | `mart_content_health()` | Считает популярность, качество прослушивания и tier трека. |
+| `mart_user_general()` | Считает реакции и Algo/Organic listening-метрики на пользователя и период. |
 | `write_mart()` | Выполняет streaming-запись и атомарно заменяет parquet с Zstandard-сжатием. |
-| `main()` | Координирует полный ETL. |
+| `build_all()` | Координирует полный ETL и экспорт CSV. |
 
 ---
 
@@ -158,36 +175,30 @@ bot-бинов) — открывается через `pl.scan_parquet()`, пр�
 
 ```powershell
 python scripts/validate_marts.py `
-  --input data/raw/multi_event.parquet `
+  --input data/processed/multi_event_clean.parquet `
   --marts-dir data/marts
 ```
 
 | Аргумент | Обязательный | Значение |
 |---|---|---|
-| `--input PATH` | Да | Исходный parquet для перекрёстной сверки. |
+| `--input PATH` | Нет | Clean parquet; по умолчанию `data/processed/multi_event_clean.parquet`. |
 | `--marts-dir PATH` | Нет | Каталог витрин; по умолчанию `data/marts/`. |
 
-### Проверки (актуальны для старой схемы, требуют обновления под v2)
+### Проверки
 
 - наличие всех parquet-файлов;
-- точное совпадение обязательных столбцов (`EXPECTED_COLUMNS`);
-- размер каждого файла не более 10 МиБ;
-- отсутствие пропусков в обязательных core-полях;
-- бинарность `is_organic`;
-- уникальность ключей `time_period`, `uid`, `item_id`;
+- точное совпадение обязательных столбцов всех пяти витрин;
+- размер каждого файла не более 50 МиБ;
+- уникальность ключей `time_period`, `(uid, time_period)`, `item_id`;
 - положительный DAU;
-- диапазон всех долей от 0 до 1;
 - совпадение числа пользователей и треков с исходником;
-- равенство `organic_likes + algo_likes = total_likes`;
-- правильность сегмента каждой пользовательской строки;
+- допустимость значений `segment` и `content_tier`;
 - сумма долей пользовательских сегментов 100%;
-- точное соответствие размеров Head, Torso и Tail заданным процентилям.
-
-Известные расхождения с `build_marts_v2.ipynb` (нужно поправить перед следующим
-прогоном): `EXPECTED_COLUMNS` перечисляет старые 4-колоночные схемы, а не
-реальные ~16 колонок каждой витрины; `mart_event_daily.parquet` вообще не
-охвачен; лимит 10 МиБ для `mart_content_health.parquet` не проходит, так как
-зерно витрины расширилось до всего каталога (а не только лайкнутых треков).
+- точное соответствие размеров Head, Torso и Tail заданным процентилям;
+- независимое совпадение глобальных Algo/Organic listening, completion и skip
+  с clean-слоем, включая пороги и bot/sequence-фильтры;
+- равенство котловых content-метрик сумме Algo + Organic;
+- совпадение схем, числа строк и контрольных сумм DataLens CSV с parquet.
 
 ### Функции
 

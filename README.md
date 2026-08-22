@@ -1,7 +1,7 @@
 # Yambda data marts
 
 Проект преобразует сырые multi-event логи Yambda (`listen`/`like`/`unlike`/
-`dislike`/`undislike`) в четыре компактные parquet-витрины для дашборда.
+`dislike`/`undislike`) в пять компактных parquet-витрин для дашборда.
 Источник — очищенный в `main.ipynb` датасет (без точных дублей, invalid-строк
 и bot-бинов) — обрабатывается лениво через `pl.scan_parquet()`, а агрегации
 выполняются streaming engine Polars, поэтому полный лог не загружается в
@@ -29,6 +29,13 @@ YM_analysis/
 ```powershell
 python -m pip install -r requirements.txt
 python scripts/build_marts_v2.py --input data/processed/multi_event_clean.parquet
+python scripts/validate_marts.py --input data/processed/multi_event_clean.parquet
+```
+
+Автотесты порогов, bot/sequence-фильтров, сегментации и CSV-экспорта:
+
+```powershell
+python -m unittest discover -v
 ```
 
 `multi_event_clean.parquet` — результат очистки в `main.ipynb` (см. раздел
@@ -37,9 +44,10 @@ python scripts/build_marts_v2.py --input data/processed/multi_event_clean.parque
 
 ## Витрины
 
-Все четыре витрины строятся из одного `LazyFrame` (`scan_source()`), который
-уже несёт `time_period`, `is_listen`, `played_ratio_capped_pct` и
-`played_seconds_capped`.
+Все пять витрин строятся из одного `LazyFrame` (`scan_source()`). Метрики
+прослушивания учитывают только `is_listen = true`, `sequence_eligible = true`,
+`is_bot_session = false`, `is_suspected_bot_user = false`. Дослушивание —
+не менее 80%; short/skip — не более 30 секунд или менее 10% трека.
 
 - `mart_daily_metrics.parquet` — 1 строка = 1 условный день (`timestamp //
   17 280`). DAU, число активных треков, разбивка событий по типам
@@ -48,18 +56,28 @@ python scripts/build_marts_v2.py --input data/processed/multi_event_clean.parque
   `organic_listen_ratio`.
 - `mart_event_daily.parquet` — 1 строка = день × тип события × органика/алго.
   Число событий, уникальных пользователей и треков в разрезе.
-- `mart_user_segments.parquet` — 1 строка = 1 пользователь. Активность по
-  всем типам событий плюс `segment`: Cold (< 5 лайков) → Explorer
+- `mart_user_segments.parquet` — 1 строка = пользователь × период, включая
+  пролонгацию сегмента в периоды без активности. Накопительная сегментация:
+  Cold (< 5 лайков) → Explorer
   (organic-лайки > 70%) → Passive (algo-лайки > 70%) → Mixed (остальные).
 - `mart_content_health.parquet` — 1 строка = 1 трек, встретившийся хотя бы в
   одном событии (не только `like`). Прослушивания, лайки/дизлайки,
-  `completion_rate`, `short_listen_rate`, `organic_ratio` и `content_tier`:
+  отдельные Algo/Organic completion и skip, `completion_rate`,
+  `short_listen_rate`, `organic_ratio` и `content_tier`:
   треки сортируются по `total_likes` (равенства — по `item_id`), первые
   `ceil(N × 1%)` → Head, до `ceil(N × 20%)` → Torso, остальные → Tail.
+- `mart_user_general.parquet` — 1 строка = пользователь × период. Содержит
+  реакции, число прослушиваний, Algo/Organic completion и skip, а также
+  число уникальных треков по каждому источнику. Для файловых источников
+  DataLens одновременно экспортируются `mart_user_general.csv`,
+  `mart_user_segments.csv` и `mart_content_health.csv` в `data/saved_csv/`.
 
-`validate_marts.py` пока сверяет витрины со старой (до multi-event) схемой —
-после перехода на `build_marts_v2.py` его нужно обновить под актуальный набор
-колонок, иначе проверка будет падать на честном прогоне.
+`validate_marts.py` проверяет схемы, зерно, размеры тиров, полноту пользователей
+и треков, а также независимо пересчитывает глобальные Algo/Organic listening,
+completion и skip из clean-слоя.
+
+Поля, связи, настройки и приёмка шести чартов DataLens описаны в
+[`docs/datalens_stage2.md`](docs/datalens_stage2.md).
 
 ## Анализ аномалий, очистка и feature-слой (main.ipynb)
 
