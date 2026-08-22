@@ -11,3 +11,7 @@ __pycache__/
 *.py[cod]
 .idea/
 .DS_Store
+/data/marts/*
+!/data/marts/.gitkeep
+/data/saved_csv/*
+!/data/saved_csv/.gitkeep
