@@ -12,7 +12,6 @@ import polars as pl
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT = PROJECT_DIR / "data" / "processed" / "multi_event_clean.parquet"
 DEFAULT_MARTS_DIR = PROJECT_DIR / "data" / "marts"
-DEFAULT_CSV_DIR = PROJECT_DIR / "data" / "saved_csv"
 MAX_MART_SIZE = 50 * 1024 * 1024  # Increased to 50MB because content mart can be large
 
 EXPECTED_COLUMNS = {
@@ -46,11 +45,6 @@ EXPECTED_COLUMNS = {
         "organic_short_listens", "algo_unique_items", "organic_unique_items",
     },
 }
-CSV_EXPORT_STEMS = (
-    "mart_user_general",
-    "mart_user_segments",
-    "mart_content_health",
-)
 CORE_SOURCE_COLUMNS = (
     "uid", "item_id", "time_period", "is_organic", "event_type",
     "played_ratio_pct", "track_length_seconds", "played_seconds_capped",
@@ -84,93 +78,14 @@ def _check_files(marts_dir: Path) -> None:
             )
 
 
-def _check_csv_exports(marts_dir: Path, csv_dir: Path) -> dict[str, int]:
-    """Ensure file-backed DataLens exports match their parquet marts."""
-    file_sizes: dict[str, int] = {}
-    signature_columns = {
-        "mart_user_general": (
-            "organic_listening",
-            "algo_listening",
-            "algo_completed_listens",
-            "organic_completed_listens",
-            "algo_short_listens",
-            "organic_short_listens",
-            "algo_unique_items",
-            "organic_unique_items",
-        ),
-        "mart_content_health": (
-            "listens",
-            "algo_completed_listens",
-            "organic_completed_listens",
-            "algo_short_listens",
-            "organic_short_listens",
-        ),
-    }
-
-    for stem in CSV_EXPORT_STEMS:
-        csv_path = csv_dir / f"{stem}.csv"
-        parquet_path = marts_dir / f"{stem}.parquet"
-        if not csv_path.is_file():
-            raise FileNotFoundError(f"Missing DataLens CSV export: {csv_path}")
-        csv = pl.scan_csv(csv_path)
-        parquet = pl.scan_parquet(parquet_path)
-        csv_columns = csv.collect_schema().names()
-        parquet_columns = parquet.collect_schema().names()
-        if csv_columns != parquet_columns:
-            raise AssertionError(
-                f"Unexpected columns in {csv_path.name}: {csv_columns} "
-                f"(expected parquet order {parquet_columns})"
-            )
-
-        metrics = signature_columns.get(stem, ())
-        csv_stats = _collect(
-            csv.select(
-                pl.len().alias("rows"),
-                *(pl.col(name).sum().alias(name) for name in metrics),
-            )
-        ).row(0, named=True)
-        parquet_stats = _collect(
-            parquet.select(
-                pl.len().alias("rows"),
-                *(pl.col(name).sum().alias(name) for name in metrics),
-            )
-        ).row(0, named=True)
-        if csv_stats != parquet_stats:
-            raise AssertionError(
-                f"Stale or inconsistent CSV export {csv_path.name}: "
-                f"CSV signature {csv_stats}, parquet signature {parquet_stats}"
-            )
-        if stem == "mart_user_segments":
-            csv_segments = _collect(
-                csv.group_by("segment").agg(pl.len().alias("rows")).sort("segment")
-            ).to_dicts()
-            parquet_segments = _collect(
-                parquet.group_by("segment")
-                .agg(pl.len().alias("rows"))
-                .sort("segment")
-            ).to_dicts()
-            if csv_segments != parquet_segments:
-                raise AssertionError(
-                    "Stale segment distribution in mart_user_segments.csv"
-                )
-        file_sizes[csv_path.name] = csv_path.stat().st_size
-    return file_sizes
-
-
 def validate_marts(
     input_path: Path,
     marts_dir: Path,
     verbose: bool = False,
-    csv_dir: Path | None = DEFAULT_CSV_DIR,
 ) -> dict:
     input_path = input_path.expanduser().resolve()
     marts_dir = marts_dir.expanduser().resolve()
     _check_files(marts_dir)
-    csv_sizes = (
-        _check_csv_exports(marts_dir, csv_dir.expanduser().resolve())
-        if csv_dir is not None
-        else {}
-    )
 
     source = pl.scan_parquet(input_path)
     source_schema = source.collect_schema()
@@ -453,7 +368,6 @@ def validate_marts(
         "file_sizes_bytes": {
             name: (marts_dir / name).stat().st_size for name in EXPECTED_COLUMNS
         },
-        "csv_file_sizes_bytes": csv_sizes,
     }
     if verbose:
         print("Validation passed")
@@ -473,14 +387,6 @@ def validate_marts(
                 for name, size in result["file_sizes_bytes"].items()
             )
         )
-        if csv_sizes:
-            print(
-                "  DataLens CSV sizes: "
-                + ", ".join(
-                    f"{name}={size / 1024:.1f} KiB"
-                    for name, size in csv_sizes.items()
-                )
-            )
     return result
 
 
@@ -492,16 +398,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--marts-dir", type=Path, default=DEFAULT_MARTS_DIR, help="Mart directory."
     )
-    parser.add_argument(
-        "--csv-dir",
-        type=Path,
-        default=DEFAULT_CSV_DIR,
-        help="DataLens CSV directory; pass an empty string to skip CSV checks.",
-    )
-    arguments = parser.parse_args()
-    if str(arguments.csv_dir) == ".":
-        arguments.csv_dir = None
-    return arguments
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
@@ -510,5 +407,4 @@ if __name__ == "__main__":
         arguments.input,
         arguments.marts_dir,
         verbose=True,
-        csv_dir=arguments.csv_dir,
     )

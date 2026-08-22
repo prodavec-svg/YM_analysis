@@ -32,7 +32,7 @@ python scripts/build_marts_v2.py --input data/processed/multi_event_clean.parque
 python scripts/validate_marts.py --input data/processed/multi_event_clean.parquet
 ```
 
-Автотесты порогов, bot/sequence-фильтров, сегментации и CSV-экспорта:
+Автотесты порогов, bot/sequence-фильтров, сегментации и Parquet-сборки:
 
 ```powershell
 python -m unittest discover -v
@@ -68,9 +68,7 @@ python -m unittest discover -v
   `ceil(N × 1%)` → Head, до `ceil(N × 20%)` → Torso, остальные → Tail.
 - `mart_user_general.parquet` — 1 строка = пользователь × период. Содержит
   реакции, число прослушиваний, Algo/Organic completion и skip, а также
-  число уникальных треков по каждому источнику. Для файловых источников
-  DataLens одновременно экспортируются `mart_user_general.csv`,
-  `mart_user_segments.csv` и `mart_content_health.csv` в `data/saved_csv/`.
+  число уникальных треков по каждому источнику.
 
 `validate_marts.py` проверяет схемы, зерно, размеры тиров, полноту пользователей
 и треков, а также независимо пересчитывает глобальные Algo/Organic listening,

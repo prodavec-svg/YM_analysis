@@ -1,13 +1,10 @@
 # Документация Python-скриптов
 
-В папке `scripts/` находятся два исполняемых модуля ETL-контура Yambda и
-ноутбук-обёртка:
+В папке `scripts/` находятся два исполняемых модуля ETL-контура Yambda:
 
 1. `build_marts_v2.py` читает обогащённый multi-event parquet и собирает
-   пять витрин и три CSV для DataLens.
+   пять Parquet-витрин.
 2. `validate_marts.py` проверяет витрины и сверяет их с исходником.
-3. `build_marts_v2.ipynb` запускает тот же модуль из Jupyter без дублирования
-   ETL-логики.
 
 Все пути вычисляются относительно корня репозитория, поэтому команды можно
 запускать из корня `YM_analysis` независимо от абсолютного расположения клона.
@@ -30,8 +27,7 @@ scripts/build_marts_v2.py
         ├── data/marts/mart_event_daily.parquet
         ├── data/marts/mart_user_segments.parquet
         ├── data/marts/mart_content_health.parquet
-        ├── data/marts/mart_user_general.parquet
-        └── data/saved_csv/{mart_user_general,mart_user_segments,mart_content_health}.csv
+        └── data/marts/mart_user_general.parquet
                          │
                          ▼
               scripts/validate_marts.py
@@ -69,8 +65,7 @@ bot-бинов) — открывается через `pl.scan_parquet()`, пр�
 ```powershell
 python scripts/build_marts_v2.py `
   --input data/processed/multi_event_clean.parquet `
-  --marts-dir data/marts `
-  --csv-dir data/saved_csv
+  --marts-dir data/marts
 ```
 
 ### Ожидаемая схема входа
@@ -138,14 +133,11 @@ suspected-bot-user. Источник хранит `played_ratio_pct` в шкал
 Поскольку зерно — весь каталог (а не только лайкнутые треки), эта витрина на
 порядок больше остальных.
 
-#### `mart_user_general.parquet` и DataLens CSV
+#### `mart_user_general.parquet`
 
 Зерно: `time_period × uid`. Помимо реакций и числа прослушиваний по источникам
 содержит шесть новых полей: Algo/Organic completion, Algo/Organic short/skip и
-Algo/Organic unique items. CSV атомарно экспортируется в `data/saved_csv/` для
-обновления файлового источника DataLens. Вместе с ним экспортируются актуальные
-`mart_user_segments.csv` и `mart_content_health.csv`, чтобы JOIN и контентные
-чарты использовали тот же расчётный запуск.
+Algo/Organic unique items.
 
 ### Функции
 
@@ -159,7 +151,7 @@ Algo/Organic unique items. CSV атомарно экспортируется в 
 | `mart_content_health()` | Считает популярность, качество прослушивания и tier трека. |
 | `mart_user_general()` | Считает реакции и Algo/Organic listening-метрики на пользователя и период. |
 | `write_mart()` | Выполняет streaming-запись и атомарно заменяет parquet с Zstandard-сжатием. |
-| `build_all()` | Координирует полный ETL и экспорт CSV. |
+| `build_all()` | Координирует полный ETL и запись пяти Parquet-витрин. |
 
 ---
 
@@ -198,7 +190,6 @@ python scripts/validate_marts.py `
 - независимое совпадение глобальных Algo/Organic listening, completion и skip
   с clean-слоем, включая пороги и bot/sequence-фильтры;
 - равенство котловых content-метрик сумме Algo + Organic;
-- совпадение схем, числа строк и контрольных сумм DataLens CSV с parquet.
 
 ### Функции
 

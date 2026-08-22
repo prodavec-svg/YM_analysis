@@ -92,31 +92,28 @@ class ListeningMetricTests(unittest.TestCase):
             totals["algo_short_listens"] + totals["organic_short_listens"],
         )
 
-    def test_full_build_exports_and_validates_all_datalens_csvs(self) -> None:
+    def test_full_build_writes_and_validates_all_parquet_marts(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             input_path = root / "multi_event_clean.parquet"
             marts_dir = root / "marts"
-            csv_dir = root / "csv"
             self.source().collect().drop("played_ratio_capped_pct").write_parquet(
                 input_path
             )
 
-            build_all(input_path, marts_dir, csv_dir)
+            build_all(input_path, marts_dir)
 
             self.assertEqual(
-                {path.name for path in csv_dir.glob("*.csv")},
+                {path.name for path in marts_dir.glob("*.parquet")},
                 {
-                    "mart_user_general.csv",
-                    "mart_user_segments.csv",
-                    "mart_content_health.csv",
+                    "mart_daily_metrics.parquet",
+                    "mart_event_daily.parquet",
+                    "mart_user_segments.parquet",
+                    "mart_content_health.parquet",
+                    "mart_user_general.parquet",
                 },
             )
-            result = validate_marts(
-                input_path,
-                marts_dir,
-                csv_dir=csv_dir,
-            )
+            result = validate_marts(input_path, marts_dir)
             self.assertEqual(result["users"], 2)
             self.assertEqual(result["items"], 7)
 

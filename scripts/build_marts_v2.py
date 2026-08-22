@@ -15,7 +15,6 @@ import polars as pl
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT = PROJECT_DIR / "data" / "processed" / "multi_event_clean.parquet"
 DEFAULT_MARTS_DIR = PROJECT_DIR / "data" / "marts"
-DEFAULT_CSV_DIR = PROJECT_DIR / "data" / "saved_csv"
 
 EVENT_TYPES = ["listen", "like", "unlike", "dislike", "undislike"]
 REQUIRED_COLUMNS = {
@@ -46,17 +45,6 @@ def write_mart(plan: pl.LazyFrame, destination: Path) -> None:
     if temporary.exists():
         temporary.unlink()
     plan.sink_parquet(temporary, compression="zstd", statistics=True, mkdir=True)
-    temporary.replace(destination)
-    print(f"Wrote: {destination}")
-
-
-def write_csv(plan: pl.LazyFrame, destination: Path) -> None:
-    """Write a DataLens-ready CSV atomically."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(destination.suffix + ".tmp")
-    if temporary.exists():
-        temporary.unlink()
-    plan.sink_csv(temporary, mkdir=True)
     temporary.replace(destination)
     print(f"Wrote: {destination}")
 
@@ -366,17 +354,7 @@ def mart_user_general(source: pl.LazyFrame) -> pl.LazyFrame:
     )
 
 
-def export_datalens_csvs(marts_dir: Path, csv_dir: Path) -> None:
-    """Export every file-backed mart required by the two DataLens datasets."""
-    for stem in (
-        "mart_user_general",
-        "mart_user_segments",
-        "mart_content_health",
-    ):
-        write_csv(pl.scan_parquet(marts_dir / f"{stem}.parquet"), csv_dir / f"{stem}.csv")
-
-
-def build_all(input_path: Path, marts_dir: Path, csv_dir: Path | None) -> None:
+def build_all(input_path: Path, marts_dir: Path) -> None:
     source = scan_source(input_path)
     plans = {
         "mart_daily_metrics.parquet": mart_daily_metrics(source),
@@ -387,31 +365,18 @@ def build_all(input_path: Path, marts_dir: Path, csv_dir: Path | None) -> None:
     }
     for name, plan in plans.items():
         write_mart(plan, marts_dir / name)
-    if csv_dir is not None:
-        export_datalens_csvs(marts_dir, csv_dir)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=DEFAULT_INPUT)
     parser.add_argument("--marts-dir", type=Path, default=DEFAULT_MARTS_DIR)
-    parser.add_argument(
-        "--csv-dir",
-        type=Path,
-        default=DEFAULT_CSV_DIR,
-        help="DataLens CSV directory; pass an empty string to skip CSV export.",
-    )
-    arguments = parser.parse_args()
-    if str(arguments.csv_dir) == ".":
-        arguments.csv_dir = None
-    return arguments
+    return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
-    csv_dir = args.csv_dir.expanduser().resolve() if args.csv_dir is not None else None
     build_all(
         args.input.expanduser().resolve(),
         args.marts_dir.expanduser().resolve(),
-        csv_dir,
     )
