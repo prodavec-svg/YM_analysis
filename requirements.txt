@@ -2,3 +2,4 @@ polars==1.43.2
 matplotlib==3.10.8
 huggingface-hub==0.36.2
 pandas==3.0.5
+duckdb

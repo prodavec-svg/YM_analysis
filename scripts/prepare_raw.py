@@ -1,6 +1,12 @@
-import polars as pl
+import duckdb
 from pathlib import Path
 import shutil
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
 
 PROJECT_DIR = Path.cwd()
 LOCAL_SOURCE_PATH = PROJECT_DIR / "data" / "raw" / "multi_event.parquet"
@@ -8,16 +14,11 @@ PROCESSED_DIR = PROJECT_DIR / "data" / "processed"
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
 CLEAN_PATH = PROCESSED_DIR / "multi_event_clean.parquet"
-VELOCITY_BINS_PATH = PROCESSED_DIR / "multi_event_velocity_bins.parquet"
-
-EXPECTED_COLUMNS = [
-    "uid", "timestamp", "item_id", "is_organic",
-    "played_ratio_pct", "track_length_seconds", "event_type",
-]
-BOT_BIN_THRESHOLD = 15
-OFFLINE_SYNC_THRESHOLD = 5
+TMP_DIR = PROCESSED_DIR / "tmp_duckdb"
+TMP_DIR.mkdir(parents=True, exist_ok=True)
 
 if not LOCAL_SOURCE_PATH.is_file():
+    logging.info("Dataset not found locally. Downloading from HuggingFace...")
     from huggingface_hub import hf_hub_download
     cached = hf_hub_download(
         repo_id="yandex/yambda",
@@ -26,69 +27,79 @@ if not LOCAL_SOURCE_PATH.is_file():
     )
     LOCAL_SOURCE_PATH.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(cached, LOCAL_SOURCE_PATH)
+    logging.info("Dataset downloaded successfully.")
 
-print("Reading dataset...")
-events_lf = pl.scan_parquet(LOCAL_SOURCE_PATH)
+logging.info("Connecting to DuckDB for out-of-core processing...")
+con = duckdb.connect(database=':memory:')
 
-# Basic derived columns
-analysis_lf = events_lf.with_columns(
-    (pl.col("timestamp").cast(pl.UInt64) // 86400).cast(pl.UInt32).alias("time_period"),
-    (pl.col("event_type") == "listen").alias("is_listen"),
-)
+# Force DuckDB to use disk for temp storage and limit memory to avoid OOM
+con.execute("PRAGMA memory_limit='4GB'")
+con.execute(f"PRAGMA temp_directory='{TMP_DIR.as_posix()}'")
 
-print("Deduplicating...")
-valid_deduplicated_lf = analysis_lf.filter(
-    pl.col("timestamp").is_not_null() & pl.col("uid").is_not_null()
-).unique(subset=["uid", "timestamp", "item_id", "event_type"])
-
-print("Computing velocity bins...")
-velocity_flags_lf = (
-    valid_deduplicated_lf.group_by(["uid", "timestamp"])
-    .agg(
-        pl.len().alias("events_in_5s"),
-        pl.col("item_id").n_unique().alias("unique_items_in_5s"),
-        pl.col("event_type").n_unique().alias("event_types_in_5s"),
+query = f"""
+COPY (
+    WITH raw_data AS (
+        SELECT *,
+               CAST(timestamp // 86400 AS UINTEGER) AS time_period,
+               (event_type = 'listen') AS is_listen
+        FROM read_parquet('{LOCAL_SOURCE_PATH.as_posix()}')
+        WHERE timestamp IS NOT NULL AND uid IS NOT NULL
+    ),
+    dedup AS (
+        SELECT DISTINCT ON (uid, timestamp, item_id, event_type) *
+        FROM raw_data
+    ),
+    velocity AS (
+        SELECT uid, timestamp,
+               count(*) as events_in_5s
+        FROM dedup
+        GROUP BY uid, timestamp
+    ),
+    flags AS (
+        SELECT uid, timestamp,
+               (events_in_5s > 15) AS is_bot_session,
+               (events_in_5s > 5 AND events_in_5s <= 15) AS is_offline_sync
+        FROM velocity
+    ),
+    bot_users AS (
+        SELECT DISTINCT uid
+        FROM flags
+        WHERE is_bot_session = true
     )
-    .with_columns(
-        (pl.col("events_in_5s") > BOT_BIN_THRESHOLD).alias("is_bot_session"),
-        pl.col("events_in_5s").is_between(
-            OFFLINE_SYNC_THRESHOLD + 1, BOT_BIN_THRESHOLD, closed="both"
-        ).alias("is_offline_sync"),
-    )
-)
-velocity_flags_lf.sink_parquet(VELOCITY_BINS_PATH, compression="zstd", mkdir=True)
+    SELECT d.uid,
+           d.timestamp,
+           d.item_id,
+           d.is_organic,
+           d.played_ratio_pct,
+           d.track_length_seconds,
+           d.event_type,
+           d.time_period,
+           d.is_listen,
+           
+           CASE WHEN d.is_listen AND d.played_ratio_pct > 100 THEN true ELSE false END AS is_replayed_over_100pct,
+           CASE WHEN d.is_listen AND d.track_length_seconds > 405.0 THEN true ELSE false END AS is_long_content,
+           
+           CASE WHEN d.is_listen THEN d.track_length_seconds * d.played_ratio_pct / 100.0 ELSE NULL END AS played_seconds_raw,
+           CASE WHEN d.is_listen THEN d.track_length_seconds * LEAST(GREATEST(d.played_ratio_pct, 0), 100) / 100.0 ELSE NULL END AS played_seconds_capped,
+           
+           CASE WHEN b.uid IS NOT NULL THEN true ELSE false END AS is_suspected_bot_user,
+           
+           COALESCE(f.is_bot_session, false) AS is_bot_session,
+           COALESCE(f.is_offline_sync, false) AS is_offline_sync,
+           
+           (COALESCE(f.is_bot_session, false) = false AND COALESCE(f.is_offline_sync, false) = false) AS sequence_eligible
+           
+    FROM dedup d
+    LEFT JOIN flags f ON d.uid = f.uid AND d.timestamp = f.timestamp
+    LEFT JOIN bot_users b ON d.uid = b.uid
+    
+    WHERE COALESCE(f.is_bot_session, false) = false
+) TO '{CLEAN_PATH.as_posix()}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
+"""
 
-print("Rejoining and calculating final fields...")
-velocity_flags_lf = pl.scan_parquet(VELOCITY_BINS_PATH)
-suspected_bot_users_lf = (
-    velocity_flags_lf.filter(pl.col("is_bot_session"))
-    .select("uid").unique()
-    .with_columns(pl.lit(True).alias("is_suspected_bot_user"))
-)
+logging.info("Executing DuckDB pipeline (spilling to disk). This may take 5-10 minutes...")
+con.execute(query)
 
-listen_expr = pl.col("event_type") == "listen"
-length_p99 = 405.0 # hardcoded approx from previous run to avoid collect
-
-curated_lf = (
-    valid_deduplicated_lf
-    .join(velocity_flags_lf, on=["uid", "timestamp"], how="left")
-    .join(suspected_bot_users_lf, on="uid", how="left")
-    .with_columns(
-        pl.col("is_suspected_bot_user").fill_null(False),
-        (listen_expr & (pl.col("played_ratio_pct") > 100)).alias("is_replayed_over_100pct"),
-        (listen_expr & (pl.col("track_length_seconds") > length_p99)).alias("is_long_content"),
-        pl.when(listen_expr)
-        .then(pl.col("track_length_seconds").cast(pl.Float64) * pl.col("played_ratio_pct") / 100)
-        .otherwise(None).alias("played_seconds_raw"),
-        pl.when(listen_expr)
-        .then(pl.col("track_length_seconds").cast(pl.Float64) * pl.col("played_ratio_pct").clip(0, 100) / 100)
-        .otherwise(None).alias("played_seconds_capped"),
-    )
-    .with_columns((~pl.col("is_bot_session") & ~pl.col("is_offline_sync")).alias("sequence_eligible"))
-)
-
-clean_lf = curated_lf.filter(~pl.col("is_bot_session").fill_null(False))
-print("Writing multi_event_clean.parquet...")
-clean_lf.sink_parquet(CLEAN_PATH, compression="zstd", mkdir=True)
-
-print("Pipeline finished successfully!")
+logging.info(f"Finished successfully! Clean dataset saved to {CLEAN_PATH}")
+# Clean up temp dir
+shutil.rmtree(TMP_DIR)
