@@ -8,7 +8,7 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
-PROJECT_DIR = Path.cwd()
+PROJECT_DIR = Path(__file__).resolve().parents[1]
 LOCAL_SOURCE_PATH = PROJECT_DIR / "data" / "raw" / "multi_event.parquet"
 PROCESSED_DIR = PROJECT_DIR / "data" / "processed"
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
