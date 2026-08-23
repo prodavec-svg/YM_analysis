@@ -1,3 +1,8 @@
+"""
+Script to build the unified multidimensional mart from cleaned data chunks.
+Implements a highly optimized 2-step aggregation pipeline to avoid exploding JOINs.
+"""
+
 import argparse
 from pathlib import Path
 import logging
@@ -42,7 +47,7 @@ def build_all(input_path: str, marts_dir: Path) -> None:
         ),
         
         -- 1. Pre-aggregate raw events at the user-item-day level
-        -- This compresses 500M rows into ~30M rows!
+        -- This step compresses raw events massively (up to 10-20x reduction)
         user_item_daily AS (
             SELECT 
                 time_period,
@@ -100,7 +105,7 @@ def build_all(input_path: str, marts_dir: Path) -> None:
             FROM item_ranked
         ),
         
-        -- 4. Enriched User-Item Daily (Joining to the SMALL table!)
+        -- 4. Enriched User-Item Daily (Joining to the pre-aggregated SMALL table)
         enriched_user_item AS (
             SELECT 
                 u.*,
@@ -112,7 +117,7 @@ def build_all(input_path: str, marts_dir: Path) -> None:
         ),
         
         -- 5. User-Level Aggregation
-        -- Since the base table is unique on (uid, item_id), COUNT(item_id) is exactly COUNT DISTINCT!
+        -- Since the base table is unique on (uid, item_id), COUNT(item_id) is exactly equivalent to COUNT(DISTINCT item_id)
         user_level_agg AS (
             SELECT 
                 time_period,

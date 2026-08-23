@@ -1,3 +1,8 @@
+"""
+Script to clean raw 15-day chunks from bot activity and deduplicate events.
+Reads raw chunks and outputs a single compressed, cleaned parquet file.
+"""
+
 import duckdb
 from pathlib import Path
 import shutil
@@ -10,10 +15,10 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT_GLOB = PROJECT_DIR / "data" / "raw" / "raw_split_15days" / "**" / "*.parquet"
 PROCESSED_DIR = PROJECT_DIR / "data" / "processed"
 CLEAN_FILE = PROCESSED_DIR / "multi_event_clean_subset.parquet"
-TMP_DIR = PROCESSED_DIR / "tmp_duckdb"
+TMP_DIR = PROCESSED_DIR / "tmp_duckdb_clean"
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Clean raw partitioned data.")
+    parser = argparse.ArgumentParser(description="Clean raw partitioned data chunks.")
     parser.add_argument("--input", type=str, default=str(DEFAULT_INPUT_GLOB), help="Glob pattern for input chunks")
     parser.add_argument("--output", type=str, default=str(CLEAN_FILE), help="Output parquet file path")
     return parser.parse_args()
@@ -30,7 +35,6 @@ def main():
     con.execute("PRAGMA memory_limit='8GB'")
     con.execute(f"PRAGMA temp_directory='{TMP_DIR.as_posix()}'")
 
-    # Удаляем старый файл, если он есть
     if output_path.exists():
         output_path.unlink()
 
@@ -95,7 +99,7 @@ def main():
     ) TO '{output_path.as_posix()}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
     """
 
-    logging.info("Cleaning data and writing output... No slow sorting required!")
+    logging.info("Cleaning data and writing output...")
     con.execute(query)
 
     logging.info(f"Clean dataset saved to {output_path}")
