@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import logging
+import argparse
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -17,7 +18,14 @@ RAW_SPLIT_DIR = PROJECT_DIR / "data" / "raw" / "raw_split_15days"
 PROCESSED_DIR = PROJECT_DIR / "data" / "processed"
 MARTS_DIR = PROJECT_DIR / "data" / "marts"
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run processing pipeline on chunks.")
+    parser.add_argument("--chunks", type=int, nargs="+", help="Specific chunk IDs to process (e.g., --chunks 14 15 16)")
+    return parser.parse_args()
+
 def main():
+    args = parse_args()
+    
     if not RAW_SPLIT_DIR.exists():
         logging.error(f"Directory {RAW_SPLIT_DIR} not found. Run split_raw.py first.")
         return
@@ -25,6 +33,10 @@ def main():
     MARTS_DIR.mkdir(parents=True, exist_ok=True)
     
     chunks = sorted([d for d in RAW_SPLIT_DIR.iterdir() if d.is_dir() and d.name.startswith("chunk_")])
+    
+    if args.chunks:
+        valid_chunk_names = [f"chunk_{i}" for i in args.chunks]
+        chunks = [d for d in chunks if d.name in valid_chunk_names]
     
     if not chunks:
         logging.info("No chunks found to process.")
@@ -62,7 +74,7 @@ def main():
             
         logging.info(f"Finished {chunk_dir.name}!\n")
 
-    logging.info("All chunks processed successfully! Send the files from data/marts/ to the main assembler.")
+    logging.info("All selected chunks processed successfully! Send the files from data/marts/ to the main assembler.")
 
 if __name__ == '__main__':
     main()
