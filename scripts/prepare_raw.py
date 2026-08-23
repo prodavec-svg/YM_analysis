@@ -9,18 +9,20 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 DEFAULT_INPUT_GLOB = PROJECT_DIR / "data" / "raw" / "raw_split_15days" / "**" / "*.parquet"
 PROCESSED_DIR = PROJECT_DIR / "data" / "processed"
-CLEAN_DIR = PROCESSED_DIR / "multi_event_clean"
+CLEAN_FILE = PROCESSED_DIR / "multi_event_clean_subset.parquet"
 TMP_DIR = PROCESSED_DIR / "tmp_duckdb"
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Clean raw partitioned data.")
     parser.add_argument("--input", type=str, default=str(DEFAULT_INPUT_GLOB), help="Glob pattern for input chunks")
+    parser.add_argument("--output", type=str, default=str(CLEAN_FILE), help="Output parquet file path")
     return parser.parse_args()
 
 def main():
     args = parse_args()
+    output_path = Path(args.output)
     
-    CLEAN_DIR.mkdir(parents=True, exist_ok=True)
+    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
     TMP_DIR.mkdir(parents=True, exist_ok=True)
 
     logging.info(f"Connecting to DuckDB. Reading from: {args.input}")
@@ -28,9 +30,9 @@ def main():
     con.execute("PRAGMA memory_limit='8GB'")
     con.execute(f"PRAGMA temp_directory='{TMP_DIR.as_posix()}'")
 
-    # Убеждаемся, что мы не дописываем в старые данные, если перезапускаем скрипт
-    shutil.rmtree(CLEAN_DIR, ignore_errors=True)
-    CLEAN_DIR.mkdir(parents=True, exist_ok=True)
+    # Удаляем старый файл, если он есть
+    if output_path.exists():
+        output_path.unlink()
 
     query = f"""
     COPY (
@@ -90,13 +92,13 @@ def main():
         LEFT JOIN bot_users b ON d.uid = b.uid
         
         WHERE COALESCE(f.is_bot_session, false) = false
-    ) TO '{CLEAN_DIR.as_posix()}' (FORMAT PARQUET, PARTITION_BY (time_period), COMPRESSION 'ZSTD', OVERWRITE_OR_IGNORE);
+    ) TO '{output_path.as_posix()}' (FORMAT PARQUET, COMPRESSION 'ZSTD');
     """
 
-    logging.info("Cleaning data and writing partitioned output by DAY. This may take 15-30 minutes per colleague...")
+    logging.info("Cleaning data and writing output... No slow sorting required!")
     con.execute(query)
 
-    logging.info(f"Clean dataset saved to {CLEAN_DIR} (partitioned by day)")
+    logging.info(f"Clean dataset saved to {output_path}")
     shutil.rmtree(TMP_DIR, ignore_errors=True)
 
 if __name__ == '__main__':
