@@ -24,7 +24,7 @@ def main():
 
     MARTS_DIR.mkdir(parents=True, exist_ok=True)
     
-    chunks = sorted([d for d in RAW_SPLIT_DIR.iterdir() if d.is_dir() and d.name.startswith("chunk_id=")])
+    chunks = sorted([d for d in RAW_SPLIT_DIR.iterdir() if d.is_dir() and d.name.startswith("chunk_")])
     
     if not chunks:
         logging.info("No chunks found to process.")
@@ -33,7 +33,7 @@ def main():
     logging.info(f"Found {len(chunks)} chunks to process on this machine.")
 
     for chunk_dir in chunks:
-        chunk_id = chunk_dir.name.split('=')[1]
+        chunk_id = chunk_dir.name.split('_')[1]
         logging.info(f"--- Processing {chunk_dir.name} ---")
         
         # 1. Clean one chunk
